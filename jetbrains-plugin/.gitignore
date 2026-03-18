@@ -42,3 +42,8 @@ bin/
 
 ### Mac OS ###
 .DS_Store
+
+# draw.io webapp (generated from submodule by copyDrawIo Gradle task)
+src/main/resources/drawio/
+# Keep our custom editor HTML
+!src/main/resources/drawio/editor.html

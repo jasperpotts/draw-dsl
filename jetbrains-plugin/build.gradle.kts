@@ -33,6 +33,24 @@ intellijPlatform {
     }
 }
 
+val copyDrawIo = tasks.register<Copy>("copyDrawIo") {
+    from("${rootDir}/../drawio/src/main/webapp") {
+        exclude("stencils/**")
+        exclude("shapes/**")
+        exclude("plugins/**")
+        exclude("*.jsp")
+        exclude("WEB-INF/**")
+        exclude("META-INF/**")
+    }
+    into("${projectDir}/src/main/resources/drawio")
+    // Preserve our custom editor.html; don't overwrite it from the webapp
+    exclude("editor.html")
+}
+
+tasks.named("processResources") {
+    dependsOn(copyDrawIo)
+}
+
 tasks {
     withType<JavaCompile> {
         sourceCompatibility = "21"
