@@ -7,6 +7,7 @@ import org.jetbrains.annotations.NotNull;
 import javax.swing.*;
 
 public final class DrawDslFileType implements FileType {
+    @SuppressWarnings("unused") // referenced by fieldName="INSTANCE" in plugin.xml
     public static final DrawDslFileType INSTANCE = new DrawDslFileType();
 
     private DrawDslFileType() {

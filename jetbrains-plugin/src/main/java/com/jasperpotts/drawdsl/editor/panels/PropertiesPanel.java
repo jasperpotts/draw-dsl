@@ -2,6 +2,8 @@ package com.jasperpotts.drawdsl.editor.panels;
 
 import com.jasperpotts.drawdsl.editor.DrawDslBundle;
 
+import com.intellij.util.ui.JBUI;
+
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
 import java.awt.*;
@@ -16,13 +18,13 @@ public class PropertiesPanel extends JPanel {
 
         GridBagConstraints labelC = new GridBagConstraints();
         labelC.anchor = GridBagConstraints.WEST;
-        labelC.insets = new Insets(2, 4, 2, 4);
+        labelC.insets = JBUI.insets(2, 4);
 
         GridBagConstraints fieldC = new GridBagConstraints();
         fieldC.fill = GridBagConstraints.HORIZONTAL;
         fieldC.weightx = 1.0;
         fieldC.gridwidth = GridBagConstraints.REMAINDER;
-        fieldC.insets = new Insets(2, 0, 2, 4);
+        fieldC.insets = JBUI.insets(2, 0, 2, 4);
 
         String[] labels = {"ID:", "Label:", "Color:", "X:", "Y:"};
         for (String label : labels) {

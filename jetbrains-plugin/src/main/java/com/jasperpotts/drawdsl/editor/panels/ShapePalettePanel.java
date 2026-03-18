@@ -1,9 +1,9 @@
 package com.jasperpotts.drawdsl.editor.panels;
 
+import com.intellij.util.ui.JBUI;
 import com.jasperpotts.drawdsl.editor.DrawDslBundle;
 import java.awt.Dimension;
 import java.awt.GridLayout;
-import java.awt.Insets;
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
 import javax.swing.JPanel;
@@ -27,7 +27,7 @@ public class ShapePalettePanel extends JPanel {
         for (String shape : SHAPES) {
             JButton btn = new JButton(shape);
             btn.setFont(btn.getFont().deriveFont(10f));
-            btn.setMargin(new Insets(2, 2, 2, 2));
+            btn.setMargin(JBUI.insets(2));
             btn.setToolTipText("Insert " + shape);
             add(btn);
         }

@@ -5,8 +5,6 @@ import org.jetbrains.annotations.Nls;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.PropertyKey;
 
-import java.util.function.Supplier;
-
 public final class DrawDslBundle {
     private static final String BUNDLE = "messages.DrawDslBundle";
     private static final DynamicBundle INSTANCE = new DynamicBundle(DrawDslBundle.class, BUNDLE);
@@ -18,7 +16,4 @@ public final class DrawDslBundle {
         return INSTANCE.getMessage(key, params);
     }
 
-    public static Supplier<@Nls String> lazyMessage(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, Object... params) {
-        return INSTANCE.getLazyMessage(key, params);
-    }
 }

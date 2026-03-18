@@ -19,15 +19,14 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
     private final VirtualFile file;
     private final JSplitPane mainPanel;
     private final DrawDslBrowserPanel browserPanel;
-    private final DrawDslSidePanel sidePanel;
 
-    public DrawDslEditor(@NotNull Project project, @NotNull VirtualFile file) {
+    public DrawDslEditor(@SuppressWarnings("unused") @NotNull Project project, @NotNull VirtualFile file) {
         this.file = file;
 
         browserPanel = new DrawDslBrowserPanel();
         Disposer.register(this, browserPanel);
 
-        sidePanel = new DrawDslSidePanel();
+        DrawDslSidePanel sidePanel = new DrawDslSidePanel();
 
         mainPanel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, browserPanel, sidePanel);
         mainPanel.setResizeWeight(0.75);
