@@ -1,11 +1,12 @@
 /**
- * Renderer abstraction — converts drawio XML to SVG or PNG.
+ * Renderer abstraction — converts mxGraph XML to SVG or PNG.
  *
  * Implementations:
- *   - desktop-cli: shells out to draw.io Desktop app (macOS/Windows/Linux with xvfb)
- *
- * Future: Playwright-based renderer for fully headless/CI environments.
+ *   - playwright: headless Chromium rendering via Playwright
+ *   - desktop-cli: shells out to draw.io Desktop app (legacy)
  */
+
+import type { Stylesheet } from "../stylesheet/types.js";
 
 export type RenderFormat = "svg" | "png";
 
@@ -20,7 +21,12 @@ export interface RenderOptions {
 }
 
 export interface Renderer {
-  render(drawioFilePath: string, outputPath: string, options: RenderOptions): Promise<void>;
+  render(
+    mxGraphXml: string,
+    outputPath: string,
+    options: RenderOptions,
+    stylesheet?: Stylesheet,
+  ): Promise<string>;
 }
 
-export { DesktopCliRenderer } from "./desktop-cli.js";
+export { PlaywrightRenderer } from "./playwright.js";

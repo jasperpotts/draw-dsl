@@ -1,58 +1,152 @@
 /**
- * Core DSL types representing a draw.io diagram in a simplified, AI-friendly format.
+ * AST types for the draw-dsl language.
  *
- * Design goals:
- *   - Minimal surface area — only expose properties that matter for diagram meaning
- *   - Text-friendly — easy to read and edit in plain text
- *   - Lossless for structure — all nodes/edges are preserved
- *   - Lossy for style — styles are simplified to a small set of named options
+ * These types represent the parsed structure of a .dsl file. They are the
+ * shared contract between parser, serializer, validator, and XML builder.
  */
 
-export type NodeShape =
+// ---------------------------------------------------------------------------
+// Scalar tokens
+// ---------------------------------------------------------------------------
+
+/** The 16 built-in shape keywords. Unknown keywords are allowed via Rule 3. */
+export type ShapeKeyword =
   | "box"
-  | "rounded-box"
+  | "rbox"
   | "diamond"
+  | "circle"
   | "ellipse"
   | "cylinder"
+  | "cloud"
   | "parallelogram"
   | "hexagon"
-  | "actor"
-  | "cloud"
+  | "trapezoid"
+  | "triangle"
   | "note"
   | "document"
-  | "process";
+  | "person"
+  | "step"
+  | "card";
 
-export type EdgeStyle = "straight" | "curved" | "orthogonal" | "isometric";
+/** Arrow operators recognised by the parser. */
+export type ArrowOperator =
+  | "->"
+  | "-->"
+  | "=>"
+  | "==>"
+  | "--"
+  | "---"
+  | "<->"
+  | "<-->"
+  | "<=>"
+  | "*->"
+  | "o->"
+  | "#->"
+  | "~->"
+  | "+->";
 
-export type ArrowType = "none" | "open" | "block" | "classic" | "diamond" | "oval";
+/** Terminal markers that can be appended to non-bidirectional arrows. */
+export type TerminalMarker = "-x" | "-o";
 
-export interface DslNode {
+/** Color tokens c0–c9. */
+export type ColorToken =
+  | "c0" | "c1" | "c2" | "c3" | "c4"
+  | "c5" | "c6" | "c7" | "c8" | "c9";
+
+/** Text size classes. */
+export type TextSizeClass =
+  | "h1" | "h2" | "h3" | "h4"
+  | "b1" | "b2" | "b3" | "b4" | "b5" | "b6"
+  | "ct1" | "ct2";
+
+/** Parsed text class attribute (e.g. `text=b1,mono`). */
+export interface TextClass {
+  size?: TextSizeClass;
+  mono?: boolean;
+}
+
+/** Connection routing styles. */
+export type RouteType = "ortho" | "straight" | "curved" | "elbow" | "er" | "iso";
+
+/** Importance levels 1–4. */
+export type ImportanceLevel = 1 | 2 | 3 | 4;
+
+/** Canvas position (absolute coordinates). */
+export interface Position {
+  x: number;
+  y: number;
+}
+
+/** Element size override. */
+export interface Size {
+  width: number;
+  height: number;
+}
+
+// ---------------------------------------------------------------------------
+// Diagram elements
+// ---------------------------------------------------------------------------
+
+export interface Shape {
+  kind: "shape";
+  /** Shape keyword — one of 16 known, or any string for Rule 3 shapes. */
+  shapeType: string;
   id: string;
   label: string;
-  shape: NodeShape;
-  /** Named color token (e.g. "blue", "red") or hex string */
-  fillColor?: string;
-  strokeColor?: string;
-  fontColor?: string;
-  /** Width in points */
-  width?: number;
-  /** Height in points */
-  height?: number;
+  position: Position;
+  size?: Size;
+  color?: ColorToken;
+  textClass?: TextClass;
+  /** Parent group shape ID. */
+  group?: string;
+  /** Source line number (1-based). */
+  line?: number;
 }
 
-export interface DslEdge {
-  id: string;
+export interface Connection {
+  kind: "connection";
   source: string;
+  arrow: ArrowOperator;
+  terminal?: TerminalMarker;
   target: string;
   label?: string;
-  style?: EdgeStyle;
-  startArrow?: ArrowType;
-  endArrow?: ArrowType;
-  dashed?: boolean;
+  color?: ColorToken;
+  textClass?: TextClass;
+  importance?: ImportanceLevel;
+  route?: RouteType;
+  waypoints?: Position[];
+  /** Source line number (1-based). */
+  line?: number;
 }
 
-export interface DslDiagram {
-  name?: string;
-  nodes: DslNode[];
-  edges: DslEdge[];
+export interface TextElement {
+  kind: "text";
+  id: string;
+  label: string;
+  position: Position;
+  color?: ColorToken;
+  textClass?: TextClass;
+  /** Source line number (1-based). */
+  line?: number;
+}
+
+export type DiagramElement = Shape | Connection | TextElement;
+
+export interface Diagram {
+  title?: string;
+  elements: DiagramElement[];
+}
+
+// ---------------------------------------------------------------------------
+// Errors
+// ---------------------------------------------------------------------------
+
+export interface ParseError {
+  line: number;
+  message: string;
+}
+
+export interface ValidationError {
+  line?: number;
+  message: string;
 }

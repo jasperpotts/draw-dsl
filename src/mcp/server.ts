@@ -4,10 +4,9 @@
  * Exposes draw.io DSL operations as MCP tools for use with Claude Code.
  *
  * Tools:
- *   decode_diagram    Read a .drawio / .drawio.svg / .drawio.png → DSL text
- *   encode_diagram    Write DSL text → .drawio XML file
- *   render_diagram    Render a .drawio file to SVG or PNG
- *   edit_diagram      Apply DSL edits and re-render in one step
+ *   diagram_parse      Read a .drawio / .drawio.svg / .drawio.png → DSL text
+ *   diagram_render     Write DSL text → .drawio.svg / .drawio / .drawio.png
+ *   diagram_validate   Check DSL text against validation rules
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -16,22 +15,21 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
 import { readFile, writeFile } from "fs/promises";
-import { extname, basename, dirname, join } from "path";
-import { extractFromSvg } from "../lib/formats/drawio-svg.js";
+import { dirname } from "path";
+import { extractFromSvg, embedIntoSvg } from "../lib/formats/drawio-svg.js";
 import { extractFromPng } from "../lib/formats/drawio-png.js";
-import { generateDsl, serializeDsl } from "../lib/dsl/generator.js";
-import { parseDsl, buildDrawioXml } from "../lib/dsl/parser.js";
-import { DesktopCliRenderer } from "../lib/renderer/desktop-cli.js";
-import type { RenderFormat } from "../lib/renderer/index.js";
+import { parseMxGraphXml } from "../lib/drawio/xml-parser.js";
+import { buildMxGraphXml } from "../lib/drawio/xml-builder.js";
+import { parseDsl } from "../lib/dsl/parser.js";
+import { serializeDiagram } from "../lib/dsl/serializer.js";
+import { validate } from "../lib/validator/index.js";
+import { resolveStylesheet } from "../lib/stylesheet/resolver.js";
 
 const server = new Server(
   { name: "draw-dsl", version: "0.1.0" },
   { capabilities: { tools: {} } }
 );
-
-const renderer = new DesktopCliRenderer();
 
 // ---------------------------------------------------------------------------
 // Tool definitions
@@ -39,9 +37,9 @@ const renderer = new DesktopCliRenderer();
 
 const TOOLS = [
   {
-    name: "decode_diagram",
+    name: "diagram_parse",
     description:
-      "Read a draw.io diagram file (.drawio, .drawio.svg, or .drawio.png) and return its content as a concise DSL string that is easy for AI to understand and edit.",
+      "Read a draw.io diagram file (.drawio, .drawio.svg, or .drawio.png) and return its content as DSL text. Best-effort reverse mapping — some precision loss when round-tripping.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -54,9 +52,9 @@ const TOOLS = [
     },
   },
   {
-    name: "encode_diagram",
+    name: "diagram_render",
     description:
-      "Write a DSL string to a .drawio XML file. Creates the file if it does not exist.",
+      "Render DSL text to a .drawio.svg, .drawio.png, or raw .drawio XML file. Validates the DSL before rendering.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -66,75 +64,33 @@ const TOOLS = [
         },
         output_path: {
           type: "string",
-          description: "Path to write the .drawio XML file.",
+          description: "Path to write the output file (.drawio.svg, .drawio.png, or .drawio).",
+        },
+        dark: {
+          type: "boolean",
+          description: "Use dark theme (for PNG/drawio output). Default: false.",
+        },
+        stylesheet_path: {
+          type: "string",
+          description: "Optional path to a custom stylesheet file.",
         },
       },
       required: ["dsl", "output_path"],
     },
   },
   {
-    name: "render_diagram",
+    name: "diagram_validate",
     description:
-      "Render a .drawio file to SVG or PNG using the draw.io Desktop application.",
-    inputSchema: {
-      type: "object" as const,
-      properties: {
-        input_path: {
-          type: "string",
-          description: "Path to the .drawio file to render.",
-        },
-        output_path: {
-          type: "string",
-          description: "Path for the output SVG or PNG file.",
-        },
-        format: {
-          type: "string",
-          enum: ["svg", "png"],
-          description: "Output format. Defaults to 'svg'.",
-        },
-        page_index: {
-          type: "number",
-          description: "Page/tab index to render (0-based). Defaults to 0.",
-        },
-        scale: {
-          type: "number",
-          description: "Scale factor for PNG output. Defaults to 1.",
-        },
-        transparent: {
-          type: "boolean",
-          description: "Use transparent background. Defaults to false.",
-        },
-      },
-      required: ["input_path", "output_path"],
-    },
-  },
-  {
-    name: "edit_diagram",
-    description:
-      "Decode a diagram to DSL, apply edits, re-encode to .drawio, and optionally render. " +
-      "Use this as the primary way to create or modify draw.io diagrams.",
+      "Validate DSL text against all rules. Returns errors with line numbers, or OK if clean.",
     inputSchema: {
       type: "object" as const,
       properties: {
         dsl: {
           type: "string",
-          description: "The updated DSL string for the diagram.",
-        },
-        drawio_path: {
-          type: "string",
-          description: "Path to write (or overwrite) the .drawio file.",
-        },
-        render: {
-          type: "boolean",
-          description: "If true, also render to SVG after writing. Defaults to false.",
-        },
-        render_format: {
-          type: "string",
-          enum: ["svg", "png"],
-          description: "Render format if render=true. Defaults to 'svg'.",
+          description: "The DSL text to validate.",
         },
       },
-      required: ["dsl", "drawio_path"],
+      required: ["dsl"],
     },
   },
 ];
@@ -150,99 +106,116 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   try {
     switch (name) {
-      case "decode_diagram": {
+      case "diagram_parse": {
         const { path } = args as { path: string };
-        const ext = extname(path).toLowerCase();
+        const ext = path.toLowerCase();
 
         let drawioXml: string;
-        if (ext === ".svg") {
+        if (ext.endsWith(".svg")) {
           const content = await readFile(path, "utf-8");
           drawioXml = await extractFromSvg(content);
-        } else if (ext === ".png") {
+        } else if (ext.endsWith(".png")) {
           drawioXml = await extractFromPng(path);
         } else {
           drawioXml = await readFile(path, "utf-8");
         }
 
-        const diagram = await generateDsl(drawioXml);
-        const dsl = serializeDsl(diagram);
+        const diagram = await parseMxGraphXml(drawioXml);
+        const dsl = serializeDiagram(diagram);
 
         return {
           content: [{ type: "text", text: dsl }],
         };
       }
 
-      case "encode_diagram": {
-        const { dsl, output_path } = args as { dsl: string; output_path: string };
-        const diagram = parseDsl(dsl);
-        const xml = buildDrawioXml(diagram);
-        await writeFile(output_path, xml, "utf-8");
+      case "diagram_render": {
+        const {
+          dsl,
+          output_path,
+          dark = false,
+          stylesheet_path,
+        } = args as {
+          dsl: string;
+          output_path: string;
+          dark?: boolean;
+          stylesheet_path?: string;
+        };
 
+        // Parse
+        const { diagram, errors: parseErrors } = parseDsl(dsl);
+        if (parseErrors.length > 0) {
+          const errMsg = parseErrors.map((e) => `line ${e.line}: ${e.message}`).join("\n");
+          return {
+            content: [{ type: "text", text: `Parse errors:\n${errMsg}` }],
+            isError: true,
+          };
+        }
+
+        // Validate
+        const validationErrors = validate(diagram);
+        if (validationErrors.length > 0) {
+          const errMsg = validationErrors.map((e) => {
+            const prefix = e.line ? `line ${e.line}: ` : "";
+            return `${prefix}${e.message}`;
+          }).join("\n");
+          return {
+            content: [{ type: "text", text: `Validation errors:\n${errMsg}` }],
+            isError: true,
+          };
+        }
+
+        // Resolve stylesheet
+        const startDir = dirname(output_path);
+        const stylesheet = await resolveStylesheet(stylesheet_path, startDir);
+
+        const theme = dark ? "dark" : "light";
+        const mxGraphXml = buildMxGraphXml(diagram, stylesheet, theme);
+
+        // Determine output format and write
+        if (output_path.endsWith(".drawio.svg") || output_path.endsWith(".svg")) {
+          // Create SVG with embedded XML
+          const encoded = encodeURIComponent(mxGraphXml);
+          const svg = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg1.1.dtd">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" content="${encoded}" version="1.1" width="800" height="600">
+  <text x="50%" y="50%" text-anchor="middle" dominant-baseline="middle" font-family="Arial, sans-serif" font-size="14" fill="#666">
+    Open in draw.io to view this diagram
+  </text>
+</svg>`;
+          await writeFile(output_path, svg, "utf-8");
+          return {
+            content: [{ type: "text", text: `Wrote .drawio.svg to ${output_path}` }],
+          };
+        }
+
+        // Raw drawio XML
+        await writeFile(output_path, mxGraphXml, "utf-8");
         return {
           content: [{ type: "text", text: `Wrote .drawio XML to ${output_path}` }],
         };
       }
 
-      case "render_diagram": {
-        const {
-          input_path,
-          output_path,
-          format = "svg",
-          page_index = 0,
-          scale = 1,
-          transparent = false,
-        } = args as {
-          input_path: string;
-          output_path: string;
-          format?: string;
-          page_index?: number;
-          scale?: number;
-          transparent?: boolean;
-        };
+      case "diagram_validate": {
+        const { dsl } = args as { dsl: string };
 
-        await renderer.render(input_path, output_path, {
-          format: format as RenderFormat,
-          pageIndex: page_index,
-          scale,
-          transparent,
-        });
+        const { diagram, errors: parseErrors } = parseDsl(dsl);
+        const validationErrors = validate(diagram);
 
-        return {
-          content: [{ type: "text", text: `Rendered ${input_path} → ${output_path}` }],
-        };
-      }
+        const allErrors = [
+          ...parseErrors.map((e) => `Parse error (line ${e.line}): ${e.message}`),
+          ...validationErrors.map((e) => {
+            const prefix = e.line ? `line ${e.line}: ` : "";
+            return `Validation error: ${prefix}${e.message}`;
+          }),
+        ];
 
-      case "edit_diagram": {
-        const {
-          dsl,
-          drawio_path,
-          render = false,
-          render_format = "svg",
-        } = args as {
-          dsl: string;
-          drawio_path: string;
-          render?: boolean;
-          render_format?: string;
-        };
-
-        const diagram = parseDsl(dsl);
-        const xml = buildDrawioXml(diagram);
-        await writeFile(drawio_path, xml, "utf-8");
-
-        let result = `Wrote .drawio XML to ${drawio_path}`;
-
-        if (render) {
-          const fmt = render_format as RenderFormat;
-          const renderOutput = join(
-            dirname(drawio_path),
-            basename(drawio_path, extname(drawio_path)) + "." + fmt
-          );
-          await renderer.render(drawio_path, renderOutput, { format: fmt });
-          result += `\nRendered → ${renderOutput}`;
+        if (allErrors.length === 0) {
+          return { content: [{ type: "text", text: "OK — no errors found" }] };
         }
 
         return {
-          content: [{ type: "text", text: result }],
+          content: [{ type: "text", text: allErrors.join("\n") }],
+          isError: true,
         };
       }
 
