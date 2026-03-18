@@ -1,0 +1,37 @@
+{
+  "name": "draw-dsl",
+  "version": "0.1.0",
+  "description": "A light limited DSL for draw.io/diagrams.net diagrams designed to be used by AI",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "draw-dsl": "dist/cli/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "dev:cli": "tsx src/cli/index.ts",
+    "dev:mcp": "tsx src/mcp/server.ts",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "files": [
+    "dist"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0",
+    "commander": "^12.1.0",
+    "xml2js": "^0.6.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/xml2js": "^0.4.14",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
