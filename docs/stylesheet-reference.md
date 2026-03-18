@@ -8,7 +8,7 @@ The stylesheet uses a **CSS-subset** syntax with custom properties. It defines c
 
 ## CSS Subset Specification
 
-The stylesheet parser is purpose-built — it is **not** a browser CSS parser. Only the constructs and properties listed below are recognized.
+The stylesheet parser is purpose-built — it is **not** a browser CSS parser. Only the constructs and properties listed below are recognized. Unknown properties or constructs are **parse errors** (strict mode — no silent failures).
 
 ### Supported Constructs
 
@@ -18,17 +18,26 @@ The stylesheet parser is purpose-built — it is **not** a browser CSS parser. O
 | `:root { ... }` | Standard | Theme-independent defaults (fonts, sizes, weights) |
 | `@theme <name> { ... }` | Custom at-rule | Theme-specific values (colors). Not standard CSS. |
 | Class selectors | `.className { ... }` | Text styles, importance levels, shape defaults |
+| `var(--name)` | Single-level | Reference a custom property. Resolved by the tool at render time. No nesting. |
 | Comments | `/* ... */` | Block comments |
+
+### Construct Rules
+
+- **Class selectors are always top-level.** They cannot appear inside `:root` or `@theme` blocks.
+- **`var()` is single-level only.** `var(--font-notes)` is valid; `var(var(--x))` is not.
+- **`@theme` blocks contain only custom properties.** No class selectors or nested blocks inside `@theme`.
+- To make class properties vary by theme, use `var()` referencing a custom property that differs per theme (e.g., `.h1 { color: var(--default-font); }`).
 
 ### NOT Supported
 
-The following CSS features are **not** recognized by the parser and will be ignored or cause errors:
+The following CSS features are **not** recognized and will cause parse errors:
 
 - Nested selectors, combinators (`.a .b`, `.a > .b`)
 - Pseudo-classes (`:hover`, `:first-child`) and pseudo-elements (`::before`)
 - `@media`, `@import`, `@keyframes`, `@supports`, or any standard at-rules
 - Shorthand properties (`border`, `font`, `background`)
-- `calc()`, `var()` references within the stylesheet itself — variables are resolved by the tool at render time
+- Nested `var()` references (`var(var(--x))`)
+- `calc()` or any other CSS functions besides `var()`
 - Any properties beyond the recognized set below
 
 ### Recognized CSS Properties
@@ -41,8 +50,8 @@ Only these properties are parsed and applied:
 | `font-size` | Text styling | `14px`, `24px` |
 | `font-weight` | Text styling | `bold`, `normal` |
 | `font-style` | Text styling | `italic`, `normal` |
-| `fill` | Shape/connection background | `#EFF6FF`, `var(--c0-fill)` |
-| `stroke` | Shape/connection border | `#3b82f6`, `var(--c0-stroke)` |
+| `fill` | Shape background | `#EFF6FF`, `var(--c0-fill)` |
+| `stroke` | Shape/connection border/line | `#3b82f6`, `var(--c0-stroke)` |
 | `stroke-width` | Connection weight | `1px`, `2px`, `3px` |
 | `stroke-dasharray` | Connection dash pattern | `4 2` |
 | `color` | Font color | `#1e40af`, `var(--c0-font)` |
@@ -53,29 +62,54 @@ Only these properties are parsed and applied:
 
 ## Theme System
 
-The stylesheet uses a three-layer system:
+### Automatic Light/Dark Switching (SVG)
 
-### 1. `:root { ... }` — Theme-Independent Defaults
+For `.drawio.svg` output, the tool embeds **both** light and dark theme values in the SVG using `@media (prefers-color-scheme: dark)`. The diagram automatically adapts to the viewer's OS/browser theme setting. This works in GitHub markdown, browsers, and any SVG viewer that respects `prefers-color-scheme`.
 
-Structural styles that stay the same regardless of theme: font families, font sizes, font weights, dash patterns. These are defined once and inherited by all themes.
+No theme selection is needed for SVG — both themes are always included.
 
-### 2. `@theme light { ... }` — Light Theme Colors
+### Forced Theme (PNG/PDF)
 
-The default theme. Defines all color values: fill backgrounds, stroke colors, and font colors for each of the 10 color tokens.
+For `.drawio.png` and `.drawio` output, use the `--theme` CLI flag to select a single theme:
 
-### 3. `@theme dark { ... }` — Dark Theme Colors
+```bash
+diagram-tool render arch.dsl -o arch.drawio.png --theme dark
+```
 
-Override theme. Only needs to redefine color values — all structural styles (fonts, sizes, weights, dasharray) inherit from `:root`.
+Default is `light` when `--theme` is not specified.
 
-### Theme Selection
+### Stylesheet Structure
 
-Themes are selected in this priority order:
+The stylesheet has three layers:
 
-1. **CLI flag:** `--theme light|dark` (highest priority)
-2. **DSL directive:** `theme dark` on the line after `stylesheet` in the DSL file
-3. **Default:** `light`
+#### 1. `:root { ... }` — Theme-Independent Defaults
+
+Structural styles that stay the same regardless of theme: font families, font sizes, font weights, dash patterns. Defined once, inherited by all themes.
+
+#### 2. `@theme light { ... }` — Light Theme Colors
+
+Defines all color values: fill backgrounds, stroke colors, font colors, and diagram background for each color token.
+
+#### 3. `@theme dark { ... }` — Dark Theme Colors
+
+Override theme. Only redefines color values — all structural styles (fonts, sizes, weights, dasharray) inherit from `:root`.
 
 At render time, the tool merges `:root` + the selected `@theme` block. Properties in the `@theme` block override those in `:root`.
+
+### Diagram Background
+
+SVG output uses a **transparent background** — the diagram inherits the page/viewer background, which works naturally with GitHub's light/dark modes.
+
+For PNG/PDF output, each theme defines `--diagram-background` to provide an opaque canvas:
+
+```css
+@theme light { --diagram-background: #ffffff; }
+@theme dark  { --diagram-background: #1e1e2e; }
+```
+
+### Missing Stylesheet Behavior
+
+If no stylesheet is found (CLI flag, DSL directive, and directory search all fail), the tool uses **built-in defaults** matching the default `diagram-styles.css` and emits a warning. Diagrams always render — a missing stylesheet is not a fatal error.
 
 ---
 
@@ -86,6 +120,14 @@ Ten color tokens — **pure colors with no semantic meaning**. The AI/user picks
 Each color defines three custom properties: fill (light pastel background), stroke (vivid border), and font color.
 
 **No raw hex colors are allowed in DSL files.** The validator rejects any hex color literal — all coloring must go through `c0`–`c9` tokens.
+
+### How `c=` Applies
+
+| Element | Fill (`--cN-fill`) | Stroke (`--cN-stroke`) | Font (`--cN-font`) |
+|---------|-------------------|----------------------|-------------------|
+| Shapes | background | border | label text |
+| Connections | not used | line color | label text |
+| Notes | background | border | label text |
 
 ### Light Theme
 
@@ -126,8 +168,8 @@ Three font stacks, using only system-available fonts (required for self-containe
 | Custom Property | Stack | Usage |
 |-----------------|-------|-------|
 | `--font-default` | `"Arial Narrow", Arial, "Helvetica Neue", Helvetica, sans-serif` | All shapes, connections, headings, body text |
-| `--font-notes` | `"Comic Sans MS", "Comic Sans", "Marker Felt", cursive` | `note` shapes (handwriting style) |
-| `--font-mono` | `"SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace` | Code snippets within labels |
+| `--font-notes` | `"Comic Sans MS", "Comic Sans", "Marker Felt", cursive` | `note` shapes (handwriting style, always applied) |
+| `--font-mono` | `"SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace` | Code/monospace text via `text=mono` class |
 
 ---
 
@@ -151,11 +193,11 @@ For shape labels and general text:
 | Class | Font Size | Usage |
 |-------|-----------|-------|
 | `b1` | 16px | Large body |
-| `b2` | 14px | Default shape label |
-| `b3` | 12px | Small |
-| `b4` | 11px | Smaller |
-| `b5` | 10px | Fine print |
-| `b6` | 9px | Micro |
+| `b2` | 14px | Default text element |
+| `b3` | 12px | Default shape label |
+| `b4` | 10px | Small |
+| `b5` | 9px | Fine print |
+| `b6` | 8px | Micro |
 
 ### Connection Text (`ct1`, `ct2`)
 
@@ -163,8 +205,25 @@ For connection labels:
 
 | Class | Font Size | Usage |
 |-------|-----------|-------|
-| `ct1` | 12px | Default connection label |
-| `ct2` | 10px | Secondary/minor connection label |
+| `ct1` | 10px | Default connection label |
+| `ct2` | 9px | Secondary/minor connection label |
+
+### Monospace (`mono`)
+
+For code snippets and technical labels:
+
+| Class | Font Size | Font Family |
+|-------|-----------|-------------|
+| `mono` | 12px | `--font-mono` |
+
+### Implicit Defaults
+
+| Element | Default Class | Font |
+|---------|--------------|------|
+| Shapes | `b3` (12px) | `--font-default` |
+| Connections | `ct1` (10px) | `--font-default` |
+| Text elements | `b2` (14px) | `--font-default` |
+| Notes | `b3` (12px) | `--font-notes` (always) |
 
 ---
 
@@ -185,12 +244,10 @@ The `imp=` attribute on connections maps to visual weight:
 
 Notes automatically receive the handwriting font and a warm post-it appearance:
 
-- Font: `--font-notes` (Comic Sans / Marker Felt / cursive)
-- Fill: `--c2-fill` (amber background)
-- Stroke: `--c2-stroke` (amber border)
+- Font: `--font-notes` (Comic Sans / Marker Felt / cursive) — always applied, `c=` does not change this
+- Default color: `c2` (amber) when no `c=` specified
+- When `c=` is specified: colors change (fill/stroke/font) but the note retains its distinctive appearance
 - Border radius: `0` (folded corner rendered by shape geometry)
-
-These defaults apply unless overridden by an explicit `c=` token on the note.
 
 ---
 
@@ -219,16 +276,20 @@ Add a new `@theme` block:
 
 ```css
 @theme high-contrast {
+  --diagram-background: #000000;
+  --default-fill: #000000;
+  --default-stroke: #ffffff;
+  --default-font: #ffffff;
   --c0-fill: #000000;    --c0-stroke: #ffffff;   --c0-font: #ffffff;
   /* ... define all 10 color tokens ... */
 }
 ```
 
-Then select it with `--theme high-contrast` on the CLI or `theme high-contrast` in the DSL file.
+Then select it with `--theme high-contrast` for PNG/PDF export. Custom themes are also embedded in SVG output if present.
 
 ### Overriding Text Styles
 
-Modify class definitions in `:root`:
+Modify class definitions at the top level of the stylesheet:
 
 ```css
 .h1 { font-size: 28px; font-weight: bold; font-style: italic; }

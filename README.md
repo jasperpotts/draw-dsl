@@ -51,9 +51,9 @@ See [docs/stylesheet-reference.md](docs/stylesheet-reference.md) for the complet
 **Default stylesheet:** [`diagram-styles.css`](diagram-styles.css)
 
 **Quick reference:**
-- **Text:** `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections)
+- **Text:** `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections), `mono` (code)
 - **Importance:** `imp=1`(bold) `imp=2`(normal) `imp=3`(thin) `imp=4`(thin-dashed)
-- **Themes:** `light` (default), `dark` — selected via `--theme` flag or `theme` directive in DSL
+- **Themes:** SVG embeds both light + dark with automatic `prefers-color-scheme` switching. `--theme` flag forces a single theme for PNG/PDF export.
 
 ---
 
@@ -100,9 +100,8 @@ diagram-tool parse arch.drawio.svg | diagram-tool validate
 | `diagram_parse` | file path | DSL text | Convert .drawio.svg → DSL |
 | `diagram_render` | DSL text, output path | writes file | Convert DSL → .drawio.svg |
 | `diagram_validate` | DSL text | errors or OK | Check DSL against rules |
-| `edit_diagram` | file path, edit instructions | writes file | **Primary tool** — parse, edit, render in one step |
 
-`edit_diagram` is the main tool for Claude Code. It handles the full round-trip: parse the existing diagram, apply edits to the DSL, validate, and render back to `.drawio.svg`.
+Claude Code is the edit engine — it calls `diagram_parse` to read an existing diagram, edits the DSL directly, validates with `diagram_validate`, and renders with `diagram_render`.
 
 ---
 
@@ -181,7 +180,7 @@ staging -> prod "approved" imp=1
 # Artifacts
 cyl registry "Container\nRegistry" @240,220 c=c5
 build -> registry "push image" imp=3
-staging -> registry "pull" imp=3 -->
+staging --> registry "pull" imp=3
 ```
 
 ### AWS Deployment Infrastructure
@@ -237,7 +236,7 @@ This condensed reference goes in your project's `CLAUDE.md` for Claude Code:
 ````markdown
 ## Diagrams
 
-Use `edit_diagram` tool to create/edit diagrams. Diagrams use draw-dsl format stored as `.drawio.svg`.
+Use `diagram_parse`, `diagram_validate`, and `diagram_render` MCP tools to create/edit diagrams. Diagrams use draw-dsl format stored as `.drawio.svg`.
 
 ### DSL Quick Reference
 
@@ -253,14 +252,15 @@ text ID "label" @X,Y [text=CLASS]
 **Shapes:** box rbox dia circle ellipse cyl cloud para hex trap tri note doc actor queue step card
 **Arrows:** -> --> => ==> -- --- <-> <--> <=> *-> o-> #-> ~-> +->
 **Colors:** c0(blue) c1(green) c2(amber) c3(red) c4(purple) c5(indigo) c6(pink) c7(slate) c8(orange) c9(teal)
-**Text:** h1-h4 (headings) b1-b6 (body) ct1-ct2 (connections)
+**Text:** h1-h4 (headings) b1-b6 (body) ct1-ct2 (connections) mono (code)
 **Importance:** imp=1(bold) imp=2(normal) imp=3(thin) imp=4(thin-dashed)
 
 ### Workflow
-1. Use `edit_diagram` for existing diagrams (handles parse → edit → render)
-2. Use `diagram_render` for new diagrams from DSL
+1. Use `diagram_parse` to read existing .drawio.svg → DSL
+2. Edit the DSL text directly
 3. Use `diagram_validate` to check DSL before rendering
-4. Commit only the `.drawio.svg` file (DSL is transient)
+4. Use `diagram_render` to write DSL → .drawio.svg
+5. Commit only the `.drawio.svg` file (DSL is transient)
 ```
 ````
 
@@ -276,7 +276,7 @@ The validator checks:
 | **Valid shape keywords** | Only the 17 recognized shape types |
 | **Valid arrow syntax** | Only recognized arrow operators |
 | **No raw hex colors** | `c=` must use `c0`–`c9` tokens only; hex literals are rejected |
-| **Valid text classes** | `text=` must be `h1`–`h4`, `b1`–`b6`, or `ct1`–`ct2` |
+| **Valid text classes** | `text=` must be `h1`–`h4`, `b1`–`b6`, `ct1`–`ct2`, or `mono` |
 | **Valid importance** | `imp=` must be `1`–`4` |
 | **Valid coordinates** | `@X,Y` must be non-negative integers |
 | **Valid sizes** | `WxH` must be positive integers |

@@ -4,7 +4,7 @@
 
 ## File Structure
 
-A `.dsl` file has three sections: header, stylesheet reference, and body.
+A `.dsl` file has two sections: header and body.
 
 ```
 diagram "Service Architecture"
@@ -17,12 +17,12 @@ stylesheet "diagram-styles.css"
 - `#` line comments
 - Blank lines for readability (ignored by parser)
 - All coordinates are in draw.io units (1 unit = 1 pixel at 100% zoom)
-- Optional theme override: `theme dark` after the `stylesheet` line
 
 ## Coordinate System
 
 - Origin `0,0` is **top-left**
 - X increases rightward, Y increases downward
+- All coordinates are **absolute canvas coordinates** — even for shapes inside groups
 - Coordinates use the `@X,Y` syntax: `@100,200`
 - Optional size override: `[WxH]` after coordinates
 
@@ -37,10 +37,10 @@ SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
 | `SHAPE` | yes | Shape keyword (see table below) |
 | `ID` | yes | Unique identifier (`[a-zA-Z][a-zA-Z0-9_-]*`) |
 | `"label"` | yes | Display text (quoted string, can be `""` for no label) |
-| `@X,Y` | yes | Position (top-left corner of shape) |
+| `@X,Y` | yes | Position (top-left corner, absolute canvas coordinates) |
 | `[WxH]` | no | Size override (default per shape type) |
 | `c=C` | no | Color token (`c0`–`c9`) |
-| `text=CLASS` | no | Text style class (`h1`–`h4`, `b1`–`b6`) |
+| `text=CLASS` | no | Text style class (`h1`–`h4`, `b1`–`b6`, `mono`). Default: `b3` |
 | `in=GROUP` | no | Parent group ID |
 
 ### Shape Vocabulary (17 shapes)
@@ -65,6 +65,16 @@ SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
 | `step` | Chevron | 120x60 | Pipeline stage |
 | `card` | Clipped corner rect | 120x80 | Card, ticket |
 
+### Shape Defaults
+
+- **Font:** `--font-default` for all shapes except `note` (which uses `--font-notes`)
+- **Text class:** `b3` (12px) when no `text=` specified
+- **Color:** `--default-fill`, `--default-stroke`, `--default-font` when no `c=` specified
+
+### Note Behavior
+
+Notes always render with the handwriting font (`--font-notes`) and folded corner geometry, regardless of other attributes. When no `c=` is specified, notes default to amber (`c2`). When `c=` is specified, the note changes color but keeps its distinctive note appearance (handwriting font, folded corner, no border radius).
+
 ## Connections
 
 Connections use bare arrow syntax — no keyword prefix needed:
@@ -79,8 +89,8 @@ SOURCE ARROW TARGET ["label"] [c=C] [text=CLASS] [imp=N] [via X1,Y1 X2,Y2 ...]
 | `ARROW` | yes | Arrow type (see table below) |
 | `TARGET` | yes | Target shape ID |
 | `"label"` | no | Connection label (quoted string) |
-| `c=C` | no | Color token (`c0`–`c9`) |
-| `text=CLASS` | no | Text style class (`ct1`, `ct2`) |
+| `c=C` | no | Color token — stroke uses `--cN-stroke`, label uses `--cN-font` |
+| `text=CLASS` | no | Text style class (`ct1`, `ct2`). Default: `ct1` |
 | `imp=N` | no | Importance level (`1`–`4`, see stylesheet) |
 | `via X1,Y1 ...` | no | Waypoints for routing |
 
@@ -115,12 +125,21 @@ SOURCE ARROW TARGET ["label"] [c=C] [text=CLASS] [imp=N] [via X1,Y1 X2,Y2 ...]
 | `~->` | Realization | Dashed + triangle arrowhead |
 | `+->` | Dependency | Dashed arrow |
 
-**Terminal markers (append to any arrow):**
+**Terminal markers (append to any non-bidirectional arrow):**
 
-| Suffix | Description |
-|--------|-------------|
-| `-x` | Cross/rejection terminal |
-| `-o` | Open circle terminal |
+| Suffix | Description | Examples |
+|--------|-------------|----------|
+| `-x` | Cross/rejection terminal | `->-x`, `-->-x`, `=>-x` |
+| `-o` | Open circle terminal | `->-o`, `-->-o`, `=>-o` |
+
+Terminal markers replace the arrowhead on the target end. They are not valid on bidirectional arrows (`<->`, `<-->`, `<=>`).
+
+### Connection Defaults
+
+- **Font:** `--font-default` for labels
+- **Text class:** `ct1` (10px) when no `text=` specified
+- **Label rendering:** no background behind labels — label color must be readable against the diagram background
+- **Color:** when `c=` is set, stroke uses `--cN-stroke` and label text uses `--cN-font`. Fill is not applicable to connections.
 
 ### Connection Routing with `via`
 
@@ -144,9 +163,17 @@ rbox cache "Redis" @300,100 c=c3 in=infra
 ```
 
 - Any shape can be a group/container
-- Children use `in=GROUP_ID` to declare membership
-- Group membership is **flat** — no nested brace syntax
-- The group shape defines the container boundary; children are positioned in absolute coordinates within it
+- Children use `in=GROUP_ID` to declare their direct parent
+- Multi-level nesting is supported (groups can contain other groups)
+- All positions use **absolute canvas coordinates**, even for nested children
+- The group shape defines the visual container boundary
+
+```
+# Multi-level nesting example
+rbox vpc "VPC" @20,20 [760x500] c=c7
+rbox subnet "Public Subnet" @40,60 [340x200] c=c0 in=vpc
+rbox alb "ALB" @60,110 c=c0 in=subnet    # alb → subnet → vpc
+```
 
 ## Text Elements
 
@@ -156,7 +183,9 @@ Standalone text labels (no shape border):
 text ID "label" @X,Y [text=CLASS]
 ```
 
-Text style classes control font size, weight, and color via the stylesheet.
+- Default text class: `b2` (14px) when no `text=` specified
+- Font: `--font-default`
+- Text style classes control font size, weight, and color via the stylesheet
 
 ## Notes
 
@@ -167,5 +196,6 @@ note n1 "This service handles\nauthentication" @400,50 c=c2
 ```
 
 - Multi-line text uses `\n` within the quoted string
-- Notes use the handwriting font defined in the stylesheet
+- Notes always use the handwriting font (`--font-notes`) — `c=` only changes colors, not the font
 - The `note` shape always renders with a folded corner
+- Default color is amber (`c2`) when no `c=` specified
