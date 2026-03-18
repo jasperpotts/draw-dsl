@@ -1,31 +1,25 @@
-<!-- Plugin Configuration File: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <!-- Unique identifier of the plugin. It should be FQN, cannot be changed between the plugin versions. -->
-    <id>com.jasperpotts.drawdsl.drawdsl-jetbrains-plugin</id>
+    <id>com.jasperpotts.drawdsl.editor</id>
+    <name>Draw DSL Editor</name>
+    <vendor url="https://github.com/jasperpotts">Jasper Potts</vendor>
 
-    <!-- Public plugin name should be written in Title Case.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
-    <name>Drawdsl-jetbrains-plugin</name>
-
-    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
-    <vendor url="https://www.yourcompany.com">YourCompany</vendor>
-
-    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
-         Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
     <description><![CDATA[
-        Enter short description for your plugin here.<br>
-        <em>most HTML tags may be used</em>
+        Custom editor for .drawio.svg and .drawio.png diagram files using the Draw DSL format.
     ]]></description>
 
-    <!-- Product and plugin compatibility requirements.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <depends>com.intellij.modules.platform</depends>
 
-    <resource-bundle>messages.MyMessageBundle</resource-bundle>
-    <!-- Extensions defined by the plugin.
-         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <resource-bundle>messages.DrawDslBundle</resource-bundle>
+
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="MyToolWindow" factoryClass="com.jasperpotts.drawdsl.drawdsljetbrainsplugin.MyToolWindowFactory"
-                    icon="AllIcons.Toolwindows.ToolWindowPalette"/>
+        <fileType
+                name="DrawDSL Diagram"
+                implementationClass="com.jasperpotts.drawdsl.editor.DrawDslFileType"
+                fieldName="INSTANCE"/>
+        <fileTypeMapping pattern="*.drawio.svg" type="DrawDSL Diagram"/>
+        <fileTypeMapping pattern="*.drawio.png" type="DrawDSL Diagram"/>
+
+        <fileEditorProvider
+                implementation="com.jasperpotts.drawdsl.editor.editor.DrawDslEditorProvider"/>
     </extensions>
 </idea-plugin>

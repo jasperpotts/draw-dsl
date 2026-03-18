@@ -1,1 +1,1 @@
-rootProject.name = "drawdsl-jetbrains-plugin"
+rootProject.name = "draw-dsl-editor"
