@@ -12,7 +12,7 @@ This plugin solves that by:
 
 - **Embedding draw.io** as the main editor canvas (via JCEF/webview) for visual drag-and-drop editing
 - **Replacing the default draw.io side panels** ("Shapes" and "Format") with native JetBrains UI panels scoped to the draw-dsl vocabulary
-- **Enforcing the draw-dsl subset** — only the 17 supported shapes, 10 color tokens, and defined text/connection styles are exposed in the UI
+- **Enforcing the draw-dsl subset** — only the 16 supported shapes, 10 color tokens, and defined text/connection styles are exposed in the UI
 - **Preserving round-trip fidelity** — diagrams edited in the plugin remain valid draw-dsl and can be parsed back to DSL text
 
 ## Design Goals
@@ -25,7 +25,7 @@ The plugin uses the [jgraph/drawio](https://github.com/jgraph/drawio) project as
 
 | Panel | Replaces | Purpose |
 |-------|----------|---------|
-| **Shape Palette** | draw.io "Shapes" panel | Exposes only the 17 draw-dsl shapes: `box`, `rbox`, `dia`, `circle`, `ellipse`, `cyl`, `cloud`, `para`, `hex`, `trap`, `tri`, `note`, `doc`, `actor`, `queue`, `step`, `card` |
+| **Shape Palette** | draw.io "Shapes" panel | Exposes only the 16 draw-dsl shapes: `box`, `rbox`, `diamond`, `circle`, `ellipse`, `cylinder`, `cloud`, `parallelogram`, `hexagon`, `trapezoid`, `triangle`, `note`, `document`, `person`, `step`, `card` |
 | **Color Picker** | draw.io format color options | 10 color tokens (`c0`–`c9`) with theme-aware swatches — no raw hex input |
 | **Text Styles** | draw.io text formatting | Headings (`h1`–`h4`), body (`b1`–`b6`), connection text (`ct1`–`ct2`) |
 | **Connection Styles** | draw.io line formatting | Arrow types (`->`, `-->`, `=>`, `<->`, `*->`, etc.) and importance levels (`imp=1`–`4`) |
@@ -51,25 +51,24 @@ The plugin reads the project's `diagram-styles.css` (resolved the same way as th
 
 The plugin UI is built around this subset:
 
-### Shapes (17 types)
+### Shapes (16 types)
 
 | Keyword | Shape | Default Size | Typical Use |
 |---------|-------|-------------|-------------|
 | `box` | Rectangle | 120x60 | Generic component |
 | `rbox` | Rounded rectangle | 120x60 | Service, microservice |
-| `dia` | Diamond | 80x80 | Decision point |
+| `diamond` | Diamond | 80x80 | Decision point |
 | `circle` | Circle | 60x60 | Start/end, event |
 | `ellipse` | Ellipse | 120x60 | Process, action |
-| `cyl` | Cylinder | 80x80 | Database, data store |
+| `cylinder` | Cylinder | 80x80 | Database, data store |
 | `cloud` | Cloud | 120x80 | Cloud provider, external |
-| `para` | Parallelogram | 120x60 | Input/output |
-| `hex` | Hexagon | 120x60 | Complex process |
-| `trap` | Trapezoid | 120x60 | Transform |
-| `tri` | Triangle | 80x80 | Merge point |
+| `parallelogram` | Parallelogram | 120x60 | Input/output |
+| `hexagon` | Hexagon | 120x60 | Complex process |
+| `trapezoid` | Trapezoid | 120x60 | Transform |
+| `triangle` | Triangle | 80x80 | Merge point |
 | `note` | Sticky note | 120x80 | Annotation, comment |
-| `doc` | Document | 120x80 | Document, file |
-| `actor` | Stick figure | 40x60 | Person, user |
-| `queue` | Horizontal cylinder | 120x60 | Message queue |
+| `document` | Document | 120x80 | Document, file |
+| `person` | Person/stick figure | 40x60 | Person, user |
 | `step` | Chevron | 120x60 | Pipeline stage |
 | `card` | Clipped corner rect | 120x80 | Card, ticket |
 
@@ -104,8 +103,8 @@ No raw hex colors — all coloring goes through these tokens, ensuring styleshee
 | Level | Visual | Usage |
 |-------|--------|-------|
 | `imp=1` | 3px solid | Critical path |
-| `imp=2` | 2px solid | Normal (default) |
-| `imp=3` | 1px solid | Secondary |
+| `imp=2` | 2px solid | Emphasized |
+| `imp=3` | 1px solid | Normal (default) |
 | `imp=4` | 1px dashed | Minor/optional |
 
 ## Architecture

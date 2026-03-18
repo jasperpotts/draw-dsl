@@ -25,8 +25,7 @@ Diagrams are authored in DSL, rendered to `.drawio.svg` for storage in repos, an
 
 ### Prerequisites
 
-- **Node.js** (for running the CLI)
-- **draw.io Desktop** (for rendering — the CLI shells out to draw.io for SVG/PNG generation)
+- **Node.js** (the CLI uses draw.io's JavaScript library directly — no desktop app needed)
 
 ### Your First Diagram
 
@@ -34,11 +33,10 @@ Diagrams are authored in DSL, rendered to `.drawio.svg` for storage in repos, an
 
 ```
 diagram "My First Diagram"
-stylesheet "diagram-styles.css"
 
 rbox api "API Gateway" @100,50 c=c0
 rbox svc "Order Service" @100,180 c=c1
-cyl db "Postgres" @100,310 c=c4
+cylinder db "Postgres" @100,310 c=c4
 
 api -> svc "REST"
 svc -> db "query"
@@ -47,7 +45,7 @@ svc -> db "query"
 2. Render it:
 
 ```bash
-diagram-tool render example.dsl -o example.drawio.svg
+draw-dsl render example.dsl -o example.drawio.svg
 ```
 
 3. Open the `.drawio.svg` in a browser, or commit it to GitHub where it renders inline.
@@ -58,11 +56,11 @@ diagram-tool render example.dsl -o example.drawio.svg
 
 ```
 SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
-SOURCE -> TARGET ["label"] [c=C] [imp=N] [via X,Y ...]
-text ID "label" @X,Y [text=CLASS]
+SOURCE -> TARGET ["label"] [c=C] [text=CLASS] [imp=N] [route=R] [via X,Y ...]
+text ID "label" @X,Y [c=C] [text=CLASS]
 ```
 
-**Shapes:** `box` `rbox` `dia` `circle` `ellipse` `cyl` `cloud` `para` `hex` `trap` `tri` `note` `doc` `actor` `queue` `step` `card`
+**Shapes (16):** `box` `rbox` `diamond` `circle` `ellipse` `cylinder` `cloud` `parallelogram` `hexagon` `trapezoid` `triangle` `note` `document` `person` `step` `card`
 **Arrows:** `->` `-->` `=>` `==>` `--` `---` `<->` `<-->` `<=>` `*->` `o->` `#->` `~->` `+->` — plus `-x`/`-o` terminal markers (e.g. `->-x`)
 **Colors:** `c0`(blue) `c1`(green) `c2`(amber) `c3`(red) `c4`(purple) `c5`(indigo) `c6`(pink) `c7`(slate) `c8`(orange) `c9`(teal)
 
@@ -72,11 +70,11 @@ Full specification: [docs/dsl-reference.md](docs/dsl-reference.md)
 
 ## Styling
 
-Diagrams use a shared stylesheet (`diagram-styles.css`) with:
+Diagrams use a shared stylesheet (`diagram-styles.css`, resolved by searching upward from the input file's directory) with:
 
 - **10 color tokens** (`c0`–`c9`) — no raw hex colors allowed
-- **Text classes** — `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections), `mono` (code)
-- **Importance levels** — `imp=1`(3px) `imp=2`(2px, default) `imp=3`(1px) `imp=4`(1px dashed)
+- **Text classes** — `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections), `mono` (font-family modifier, combinable with size classes)
+- **Importance levels** — `imp=1`(3px) `imp=2`(2px) `imp=3`(1px, default) `imp=4`(1px dashed). Thick arrows (`=>`, `==>`, `<=>`) apply a 2x stroke multiplier.
 - **Automatic light/dark theme** — SVG embeds both themes with `prefers-color-scheme` switching
 
 Full specification: [docs/stylesheet-reference.md](docs/stylesheet-reference.md) | Default stylesheet: [`diagram-styles.css`](diagram-styles.css)
@@ -87,7 +85,7 @@ Full specification: [docs/stylesheet-reference.md](docs/stylesheet-reference.md)
 
 ### CLI
 
-The `diagram-tool` CLI parses, renders, and validates diagrams. Supports piping, multiple output formats (`.drawio.svg`, `.drawio.png`, `.drawio`), and automatic stylesheet resolution.
+The `draw-dsl` CLI parses, renders, and validates diagrams. Supports piping, multiple output formats (`.drawio.svg`, `.drawio.png`, `.drawio`), and automatic stylesheet resolution.
 
 See [docs/architecture.md](docs/architecture.md) for full CLI usage, supported formats, and stylesheet resolution order.
 
@@ -99,7 +97,7 @@ See [docs/architecture.md](docs/architecture.md) for MCP tool details and the CL
 
 ### JetBrains Plugin
 
-A JetBrains IDE plugin for visual editing of `.drawio.svg` diagrams. Embeds draw.io as the canvas with custom side panels scoped to the draw-dsl subset — only the 17 shapes, 10 color tokens, and defined styles are exposed.
+A JetBrains IDE plugin for visual editing of `.drawio.svg` diagrams. Embeds draw.io as the canvas with custom side panels scoped to the draw-dsl subset — only the 16 shapes, 10 color tokens, and defined styles are exposed.
 
 See [jetbrains-plugin/README.md](jetbrains-plugin/README.md) for setup and architecture.
 
@@ -111,11 +109,10 @@ See [jetbrains-plugin/README.md](jetbrains-plugin/README.md) for setup and archi
 
 ```
 diagram "Order Service Architecture"
-stylesheet "diagram-styles.css"
 
 # External
 cloud inet "Internet" @10,10 [140x80] c=c7
-actor user "Customer" @50,120 c=c7
+person user "Customer" @50,120 c=c7
 
 # API Gateway
 rbox gw "API Gateway" @200,50 c=c0
@@ -126,16 +123,16 @@ rbox payments "Payment\nService" @300,200 c=c1
 rbox notify "Notification\nService" @500,200 c=c4
 
 # Data
-cyl ordersDb "Orders DB" @100,350 c=c0
-cyl paymentsDb "Payments DB" @300,350 c=c1
-queue events "Event Bus" @350,100 c=c8
+cylinder ordersDb "Orders DB" @100,350 c=c0
+cylinder paymentsDb "Payments DB" @300,350 c=c1
+rbox events "Event Bus" @350,100 c=c8
 
 # Connections
 user -> gw "HTTPS" imp=1
 gw -> orders "REST"
 gw -> payments "REST"
-orders -> ordersDb "query" imp=2
-payments -> paymentsDb "query" imp=2
+orders -> ordersDb "query"
+payments -> paymentsDb "query"
 orders -> events "publish"
 events -> notify "subscribe"
 payments -> events "publish"
@@ -148,7 +145,6 @@ note n1 "All services use\nmTLS internally" @500,350 c=c2
 
 ```
 diagram "CI/CD Pipeline"
-stylesheet "diagram-styles.css"
 
 # Trigger
 circle start "Push" @10,100 c=c0
@@ -159,7 +155,7 @@ step test "Test" @240,90 c=c1
 step scan "Security\nScan" @380,90 c=c4
 
 # Decision
-dia gate "Pass?" @530,80 c=c2
+diamond gate "Pass?" @530,80 c=c2
 
 # Deploy stages
 step staging "Deploy\nStaging" @660,40 c=c8
@@ -178,16 +174,15 @@ gate -> fail "no"
 staging -> prod "approved" imp=1
 
 # Artifacts
-cyl registry "Container\nRegistry" @240,220 c=c5
-build -> registry "push image" imp=3
-staging --> registry "pull" imp=3
+cylinder registry "Container\nRegistry" @240,220 c=c5
+build -> registry "push image"
+staging --> registry "pull"
 ```
 
 ### AWS Deployment Infrastructure
 
 ```
 diagram "AWS Production Infrastructure"
-stylesheet "diagram-styles.css"
 
 # VPC container
 rbox vpc "VPC (10.0.0.0/16)" @20,20 [760x500] c=c7
@@ -206,9 +201,9 @@ rbox ecs3 "ECS Task" @440,180 c=c1 in=privSub
 
 # Data layer
 rbox dataSub "Data Subnet" @420,280 [340x220] c=c4 in=vpc
-cyl rds "RDS\nPostgres" @440,330 c=c4 in=dataSub
-cyl redis "ElastiCache\nRedis" @590,330 c=c3 in=dataSub
-queue sqs "SQS Queue" @440,430 c=c8 in=dataSub
+cylinder rds "RDS\nPostgres" @440,330 c=c4 in=dataSub
+cylinder redis "ElastiCache\nRedis" @590,330 c=c3 in=dataSub
+rbox sqs "SQS Queue" @440,430 c=c8 in=dataSub
 
 # External
 cloud cf "CloudFront\nCDN" @60,350 c=c8
@@ -217,12 +212,12 @@ cloud inet "Internet" @60,460 c=c7
 # Connections
 inet -> cf "HTTPS" imp=1
 cf -> alb "origin" imp=1
-alb -> ecs1 imp=2
-alb -> ecs2 imp=2
-alb -> ecs3 imp=2
+alb -> ecs1
+alb -> ecs2
+alb -> ecs3
 ecs1 -> rds "query" via 440,250 440,320
 ecs2 -> redis "cache"
-ecs1 -> sqs "enqueue" imp=3
+ecs1 -> sqs "enqueue"
 nat -> inet "outbound" -->
 bastion -> ecs1 "SSH" --> imp=4
 ```
@@ -244,6 +239,6 @@ bastion -> ecs1 "SSH" --> imp=4
 
 - **Custom draw.io UI** — minimal, cleaned-up version of draw.io with built-in DSL/stylesheet support for human hand-editing in an easy round-trip workflow
 - **Auto-layout hints** — optional `layout=lr` / `layout=tb` directives for simple diagrams that don't need manual positioning
-- **Playwright renderer** — headless browser-based rendering as an alternative to the draw.io Desktop CLI, for CI/headless environments
+- **Playwright renderer** — headless browser-based rendering as an alternative for CI/headless environments
 - **Shape libraries** — cloud provider icon packs (AWS, GCP, Azure) as importable shape sets with their own keywords
 - **Live preview** — file watcher that re-renders on DSL changes

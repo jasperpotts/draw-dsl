@@ -1,7 +1,7 @@
 /* ==========================================================================
    draw-dsl Default Stylesheet
 
-   CSS-subset format — parsed by diagram-tool, not a browser.
+   CSS-subset format — parsed by draw-dsl, not a browser.
    See docs/stylesheet-reference.md for the full specification.
    ========================================================================== */
 
@@ -35,8 +35,8 @@
 .ct1 { font-size: 10px; }
 .ct2 { font-size: 9px; }
 
-/* Monospace */
-.mono { font-size: 12px; font-family: var(--font-mono); }
+/* Monospace (font-family modifier — inherits size from element default or paired size class) */
+.mono { font-family: var(--font-mono); }
 
 /* Connection importance levels */
 .imp1 { stroke-width: 3px; }

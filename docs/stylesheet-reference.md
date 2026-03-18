@@ -16,7 +16,7 @@ The stylesheet parser is purpose-built — it is **not** a browser CSS parser. O
 |-----------|--------|---------|
 | Custom properties | `--name: value;` | The primary mechanism for defining tokens |
 | `:root { ... }` | Standard | Theme-independent defaults (fonts, sizes, weights) |
-| `@theme <name> { ... }` | Custom at-rule | Theme-specific values (colors). Not standard CSS. |
+| `@theme light { ... }` / `@theme dark { ... }` | Custom at-rule | Theme-specific values (colors). Only `light` and `dark` are supported. |
 | Class selectors | `.className { ... }` | Text styles, importance levels, shape defaults |
 | `var(--name)` | Single-level | Reference a custom property. Resolved by the tool at render time. No nesting. |
 | Comments | `/* ... */` | Block comments |
@@ -64,19 +64,29 @@ Only these properties are parsed and applied:
 
 ### Automatic Light/Dark Switching (SVG)
 
-For `.drawio.svg` output, the tool embeds **both** light and dark theme values in the SVG using `@media (prefers-color-scheme: dark)`. The diagram automatically adapts to the viewer's OS/browser theme setting. This works in GitHub markdown, browsers, and any SVG viewer that respects `prefers-color-scheme`.
+For `.drawio.svg` output, the rendering pipeline is:
+
+1. Generate mxGraph XML with light theme colors
+2. Use the draw.io JS library to generate standard SVG
+3. Post-process: replace known palette hex values with CSS custom properties, inject a `<style>` block with both light and dark themes via `@media (prefers-color-scheme: dark)`
+
+The diagram automatically adapts to the viewer's OS/browser theme setting. This works in GitHub markdown, browsers, and any SVG viewer that respects `prefers-color-scheme`.
+
+**draw.io compatibility** is preserved because draw.io reads the embedded mxGraph XML, not the SVG visual layer.
+
+**Graceful fallback:** If a viewer strips the `<style>` block (e.g., GitHub sanitization), the diagram falls back to light theme since the base SVG uses light theme colors.
 
 No theme selection is needed for SVG — both themes are always included.
 
 ### Forced Theme (PNG/PDF)
 
-For `.drawio.png` and `.drawio` output, use the `--theme` CLI flag to select a single theme:
+For `.drawio.png` and `.drawio` output, use the `--dark` CLI flag to render with the dark theme:
 
 ```bash
-diagram-tool render arch.dsl -o arch.drawio.png --theme dark
+draw-dsl render arch.dsl -o arch.drawio.png --dark
 ```
 
-Default is `light` when `--theme` is not specified.
+Default is light theme when `--dark` is not specified.
 
 ### Stylesheet Structure
 
@@ -109,7 +119,7 @@ For PNG/PDF output, each theme defines `--diagram-background` to provide an opaq
 
 ### Missing Stylesheet Behavior
 
-If no stylesheet is found (CLI flag, DSL directive, and directory search all fail), the tool uses **built-in defaults** matching the default `diagram-styles.css` and emits a warning. Diagrams always render — a missing stylesheet is not a fatal error.
+If no stylesheet is found (CLI flag and directory search both fail), the tool uses **built-in defaults** matching the default `diagram-styles.css` and emits a warning. Diagrams always render — a missing stylesheet is not a fatal error.
 
 ---
 
@@ -210,11 +220,13 @@ For connection labels:
 
 ### Monospace (`mono`)
 
-For code snippets and technical labels:
+`mono` is a **font-family modifier**, not a complete style. It sets the font to `--font-mono` and inherits size from the element's default or from a paired size class.
 
-| Class | Font Size | Font Family |
-|-------|-----------|-------------|
-| `mono` | 12px | `--font-mono` |
+`text=` can accept a comma-separated pair: one size class + `mono`. Examples:
+- `text=mono` — monospace at the element's default size
+- `text=b1,mono` — 16px monospace
+- `text=h2,mono` — 20px bold monospace
+- `text=ct1,mono` — 10px monospace (for connection labels)
 
 ### Implicit Defaults
 
@@ -231,12 +243,14 @@ For code snippets and technical labels:
 
 The `imp=` attribute on connections maps to visual weight:
 
-| Level | Stroke Width | Dash Pattern | Usage |
-|-------|-------------|--------------|-------|
+| Level | Base Stroke Width | Dash Pattern | Usage |
+|-------|------------------|--------------|-------|
 | `imp=1` | 3px | solid | Critical path |
-| `imp=2` | 2px | solid | Normal (default) |
-| `imp=3` | 1px | solid | Secondary |
+| `imp=2` | 2px | solid | Emphasized |
+| `imp=3` | 1px | solid | Normal (default) |
 | `imp=4` | 1px | `4 2` | Minor/optional |
+
+Thick arrows (`=>`, `==>`, `<=>`) apply a **2x stroke multiplier** on top of the `imp=` base width. See [DSL Reference — Importance × Arrow Type](dsl-reference.md#importance--arrow-type--multiplicative-stroke-width) for details.
 
 ---
 
@@ -268,24 +282,8 @@ To create a project-specific stylesheet:
 1. **Copy** `diagram-styles.css` to your project root
 2. **Modify** color values, font stacks, or text sizes as needed
 3. The tool finds stylesheets by searching up the directory tree from the DSL file, so place it at the appropriate level
-4. Reference it explicitly in DSL files: `stylesheet "my-styles.css"` or let the tool find `diagram-styles.css` automatically
 
-### Adding a Custom Theme
-
-Add a new `@theme` block:
-
-```css
-@theme high-contrast {
-  --diagram-background: #000000;
-  --default-fill: #000000;
-  --default-stroke: #ffffff;
-  --default-font: #ffffff;
-  --c0-fill: #000000;    --c0-stroke: #ffffff;   --c0-font: #ffffff;
-  /* ... define all 10 color tokens ... */
-}
-```
-
-Then select it with `--theme high-contrast` for PNG/PDF export. Custom themes are also embedded in SVG output if present.
+Only `@theme light { ... }` and `@theme dark { ... }` blocks are supported. Custom themes are not available.
 
 ### Overriding Text Styles
 
