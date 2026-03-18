@@ -3,6 +3,9 @@
   <component name="ProjectModuleManager">
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/draw-dsl.iml" filepath="$PROJECT_DIR$/.idea/draw-dsl.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/draw-dsl-editor.iml" filepath="$PROJECT_DIR$/.idea/modules/draw-dsl-editor.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/draw-dsl-editor.main.iml" filepath="$PROJECT_DIR$/.idea/modules/draw-dsl-editor.main.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/modules/draw-dsl-editor.test.iml" filepath="$PROJECT_DIR$/.idea/modules/draw-dsl-editor.test.iml" />
     </modules>
   </component>
 </project>

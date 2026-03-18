@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <bytecodeTargetLevel>
+      <module name="draw-dsl-editor" target="25" />
+      <module name="draw-dsl-editor.main" target="21" />
+      <module name="draw-dsl-editor.test" target="21" />
+    </bytecodeTargetLevel>
+  </component>
+</project>
