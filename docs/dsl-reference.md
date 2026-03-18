@@ -40,7 +40,7 @@ SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
 | `@X,Y` | yes | Position (top-left corner, absolute canvas coordinates) |
 | `[WxH]` | no | Size override (default per shape type) |
 | `c=C` | no | Color token (`c0`–`c9`) |
-| `text=CLASS` | no | Text style class (`h1`–`h4`, `b1`–`b6`, `mono`). Default: `b3` |
+| `text=CLASS` | no | Text style class (`h1`–`h4`, `b1`–`b6`, `mono`; not `ct1`/`ct2` which are connection-only). Default: `b3` |
 | `in=GROUP` | no | Parent group ID |
 
 ### Shape Vocabulary (17 shapes)

@@ -221,7 +221,7 @@ For code snippets and technical labels:
 | Element | Default Class | Font |
 |---------|--------------|------|
 | Shapes | `b3` (12px) | `--font-default` |
-| Connections | `ct1` (10px) | `--font-default` |
+| Connections | `ct1` (10px) | `--font-default` (no label background) |
 | Text elements | `b2` (14px) | `--font-default` |
 | Notes | `b3` (12px) | `--font-notes` (always) |
 

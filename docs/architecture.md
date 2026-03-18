@@ -107,7 +107,7 @@ text ID "label" @X,Y [text=CLASS]
 **Arrows:** -> --> => ==> -- --- <-> <--> <=> *-> o-> #-> ~-> +->
 **Colors:** c0(blue) c1(green) c2(amber) c3(red) c4(purple) c5(indigo) c6(pink) c7(slate) c8(orange) c9(teal)
 **Text:** h1-h4 (headings) b1-b6 (body) ct1-ct2 (connections) mono (code)
-**Importance:** imp=1(bold) imp=2(normal) imp=3(thin) imp=4(thin-dashed)
+**Importance:** imp=1(3px) imp=2(2px, default) imp=3(1px) imp=4(1px dashed)
 
 ### Workflow
 1. Use `diagram_parse` to read existing .drawio.svg → DSL
