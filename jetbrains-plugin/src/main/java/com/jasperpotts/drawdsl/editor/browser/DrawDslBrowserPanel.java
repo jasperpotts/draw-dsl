@@ -10,11 +10,11 @@ import com.jasperpotts.drawdsl.editor.DrawDslBundle;
 import org.cef.browser.CefBrowser;
 import org.cef.browser.CefFrame;
 import org.cef.callback.CefCallback;
+import org.cef.handler.CefCookieAccessFilter;
 import org.cef.handler.CefLoadHandlerAdapter;
 import org.cef.handler.CefRequestHandlerAdapter;
 import org.cef.handler.CefResourceHandler;
 import org.cef.handler.CefResourceRequestHandler;
-import org.cef.handler.CefCookieAccessFilter;
 import org.cef.misc.BoolRef;
 import org.cef.misc.IntRef;
 import org.cef.misc.StringRef;
@@ -32,6 +32,10 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     public interface DiagramChangeListener {
         void onDiagramChanged(String xml);
     }
+
+    // Fake origin used as base URL for loadHTML — lets CEF route relative script
+    // requests through our request handler without any real network call.
+    private static final String BASE_ORIGIN = "http://drawio-local";
 
     private JBCefBrowser browser;
     private JBCefJSQuery saveQuery;
@@ -51,40 +55,39 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
         browser = new JBCefBrowser();
 
-        // 1. Register custom scheme handler BEFORE loading any URL
+        // Intercept http://drawio-local/... and serve from classpath /drawio/...
         browser.getJBCefClient().addRequestHandler(
-                new DrawIoSchemeHandler(), browser.getCefBrowser());
+                new DrawIoRequestHandler(), browser.getCefBrowser());
 
-        // 2. Set up JS→Java save callback
+        // Set up JS→Java save callback
         saveQuery = JBCefJSQuery.create((JBCefBrowserBase) browser);
         saveQuery.addHandler((xml) -> {
-            if (changeListener != null) {
-                changeListener.onDiagramChanged(xml);
-            }
+            if (changeListener != null) changeListener.onDiagramChanged(xml);
             return null;
         });
 
-        // 3. On page load: inject the callback reference, then send pending XML
+        // On page load: inject callback, then flush any pending XML
         browser.getJBCefClient().addLoadHandler(new CefLoadHandlerAdapter() {
             @Override
             public void onLoadEnd(CefBrowser cefBrowser, CefFrame frame, int statusCode) {
                 if (!frame.isMain()) return;
                 pageLoaded = true;
-                // Inject save callback as a named JS function
                 String inject = "window.__javaSaveCallback = function(xml) { "
                         + saveQuery.inject("xml") + " };";
                 cefBrowser.executeJavaScript(inject, cefBrowser.getURL(), 0);
-                // Send any diagram XML that arrived before page was ready
                 if (pendingXml != null) {
-                    String load = "loadDiagramXml(" + jsonString(pendingXml) + ");";
-                    cefBrowser.executeJavaScript(load, cefBrowser.getURL(), 0);
+                    cefBrowser.executeJavaScript(
+                            "loadDiagramXml(" + jsonString(pendingXml) + ");",
+                            cefBrowser.getURL(), 0);
                     pendingXml = null;
                 }
             }
         }, browser.getCefBrowser());
 
-        // 4. Load our custom editor page
-        browser.loadURL("drawio://app/editor.html");
+        // Load via our intercepted scheme so the page URL is http://drawio-local/editor.html
+        // (not the virtual file:///jbcefbrowser/ URL that loadHTML produces, which breaks
+        // JCEF's GPU compositing and prevents SVG content from painting).
+        browser.loadURL(BASE_ORIGIN + "/editor.html");
         add(browser.getComponent(), BorderLayout.CENTER);
     }
 
@@ -101,6 +104,13 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         } else {
             pendingXml = xml;
         }
+    }
+
+    public void insertShape(String style, int x, int y, int w, int h, String label) {
+        if (browser == null || !pageLoaded) return;
+        browser.getCefBrowser().executeJavaScript(
+                "insertShape(" + jsonString(style) + "," + x + "," + y + "," + w + "," + h + "," + jsonString(label) + ");",
+                browser.getCefBrowser().getURL(), 0);
     }
 
     private static String jsonString(String v) {
@@ -126,53 +136,48 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     }
 
     // -------------------------------------------------------------------------
-    // Scheme handler: intercepts drawio://app/... and serves from classpath
+    // Intercept http://drawio-local/... → serve from classpath /drawio/...
+    // CEF calls getResourceRequestHandler before any DNS/network operation,
+    // so the unresolvable host never causes a network error.
     // -------------------------------------------------------------------------
 
-    private static class DrawIoSchemeHandler extends CefRequestHandlerAdapter {
+    private static class DrawIoRequestHandler extends CefRequestHandlerAdapter {
         @Override
         public CefResourceRequestHandler getResourceRequestHandler(
-                CefBrowser browser,
-                CefFrame frame,
-                CefRequest request,
-                boolean isNavigation,
-                boolean isDownload,
-                String requestInitiator,
-                BoolRef disableDefaultHandling) {
+                CefBrowser browser, CefFrame frame, CefRequest request,
+                boolean isNavigation, boolean isDownload,
+                String requestInitiator, BoolRef disableDefaultHandling) {
 
             String url = request.getURL();
-            if (!url.startsWith("drawio://app/")) return null;
+            if (!url.startsWith(BASE_ORIGIN + "/")) return null;
 
-            // Extract file path (strip scheme+host, strip query string)
-            String path = url.substring("drawio://app".length());
+            String path = url.substring(BASE_ORIGIN.length());
             int q = path.indexOf('?');
             if (q >= 0) path = path.substring(0, q);
-            if (path.isEmpty() || path.equals("/")) path = "/editor.html";
 
-            InputStream stream = DrawDslBrowserPanel.class
-                    .getResourceAsStream("/drawio" + path);
+            InputStream stream = DrawDslBrowserPanel.class.getResourceAsStream("/drawio" + path);
             if (stream == null) return null;
 
             return new ClasspathResourceRequestHandler(stream, mimeTypeFor(path));
         }
+    }
 
-        private String mimeTypeFor(String path) {
-            if (path.endsWith(".html")) return "text/html";
-            if (path.endsWith(".js"))   return "application/javascript";
-            if (path.endsWith(".css"))  return "text/css";
-            if (path.endsWith(".svg"))  return "image/svg+xml";
-            if (path.endsWith(".png"))  return "image/png";
-            if (path.endsWith(".gif"))  return "image/gif";
-            if (path.endsWith(".ico"))  return "image/x-icon";
-            if (path.endsWith(".json")) return "application/json";
-            if (path.endsWith(".xml"))  return "application/xml";
-            if (path.endsWith(".txt"))  return "text/plain";
-            return "application/octet-stream";
-        }
+    private static String mimeTypeFor(String path) {
+        if (path.endsWith(".html")) return "text/html";
+        if (path.endsWith(".js"))   return "application/javascript";
+        if (path.endsWith(".css"))  return "text/css";
+        if (path.endsWith(".svg"))  return "image/svg+xml";
+        if (path.endsWith(".png"))  return "image/png";
+        if (path.endsWith(".gif"))  return "image/gif";
+        if (path.endsWith(".ico"))  return "image/x-icon";
+        if (path.endsWith(".json")) return "application/json";
+        if (path.endsWith(".xml"))  return "application/xml";
+        if (path.endsWith(".txt"))  return "text/plain";
+        return "application/octet-stream";
     }
 
     // -------------------------------------------------------------------------
-    // CefResourceRequestHandler backed by a classpath InputStream
+    // CefResourceRequestHandler — wraps a classpath InputStream
     // -------------------------------------------------------------------------
 
     private static class ClasspathResourceRequestHandler implements CefResourceRequestHandler {
@@ -186,51 +191,39 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
         @Override
         public CefCookieAccessFilter getCookieAccessFilter(
-                CefBrowser browser, CefFrame frame, CefRequest request) {
-            return null;
-        }
+                CefBrowser b, CefFrame f, CefRequest r) { return null; }
 
         @Override
         public boolean onBeforeResourceLoad(
-                CefBrowser browser, CefFrame frame, CefRequest request) {
-            return false;
-        }
+                CefBrowser b, CefFrame f, CefRequest r) { return false; }
 
         @Override
         public CefResourceHandler getResourceHandler(
-                CefBrowser browser, CefFrame frame, CefRequest request) {
+                CefBrowser b, CefFrame f, CefRequest r) {
             return new InputStreamResourceHandler(stream, mimeType);
         }
 
         @Override
         public void onResourceRedirect(
-                CefBrowser browser, CefFrame frame,
-                CefRequest request, CefResponse response, StringRef newUrl) {
-        }
+                CefBrowser b, CefFrame f, CefRequest req,
+                CefResponse res, StringRef newUrl) {}
 
         @Override
         public boolean onResourceResponse(
-                CefBrowser browser, CefFrame frame,
-                CefRequest request, CefResponse response) {
-            return false;
-        }
+                CefBrowser b, CefFrame f, CefRequest req, CefResponse res) { return false; }
 
         @Override
         public void onResourceLoadComplete(
-                CefBrowser browser, CefFrame frame,
-                CefRequest request, CefResponse response,
-                CefURLRequest.Status status, long receivedContentLength) {
-        }
+                CefBrowser b, CefFrame f, CefRequest req, CefResponse res,
+                CefURLRequest.Status status, long receivedContentLength) {}
 
         @Override
         public void onProtocolExecution(
-                CefBrowser browser, CefFrame frame,
-                CefRequest request, BoolRef allowOsExecution) {
-        }
+                CefBrowser b, CefFrame f, CefRequest req, BoolRef allowOsExecution) {}
     }
 
     // -------------------------------------------------------------------------
-    // CefResourceHandler that streams data from an InputStream
+    // CefResourceHandler — streams data from an InputStream
     // -------------------------------------------------------------------------
 
     private static class InputStreamResourceHandler implements CefResourceHandler {
@@ -253,22 +246,18 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
                 CefResponse response, IntRef responseLength, StringRef redirectUrl) {
             response.setMimeType(mimeType);
             response.setStatus(200);
-            responseLength.set(-1); // unknown length; stream until exhausted
+            responseLength.set(-1);
         }
 
         @Override
         public boolean readResponse(
                 byte[] dataOut, int bytesToRead, IntRef bytesRead, CefCallback callback) {
             try {
-                int read = stream.read(dataOut, 0, bytesToRead);
-                if (read > 0) {
-                    bytesRead.set(read);
-                    return true;
-                } else {
-                    bytesRead.set(0);
-                    stream.close();
-                    return false;
-                }
+                int n = stream.read(dataOut, 0, bytesToRead);
+                if (n > 0) { bytesRead.set(n); return true; }
+                bytesRead.set(0);
+                stream.close();
+                return false;
             } catch (IOException e) {
                 bytesRead.set(0);
                 return false;
@@ -277,10 +266,7 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
         @Override
         public void cancel() {
-            try {
-                stream.close();
-            } catch (IOException ignored) {
-            }
+            try { stream.close(); } catch (IOException ignored) {}
         }
     }
 }

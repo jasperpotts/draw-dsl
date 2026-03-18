@@ -20,8 +20,18 @@ import javax.swing.*;
 import java.beans.PropertyChangeListener;
 
 public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
+    // Default diagram shown for new/empty files — includes a visible test shape
+    // so we can confirm end-to-end rendering at a glance.
     private static final String EMPTY_DIAGRAM =
-            "<mxGraphModel><root><mxCell id=\"0\"/><mxCell id=\"1\" parent=\"0\"/></root></mxGraphModel>";
+            "<mxGraphModel>" +
+            "<root>" +
+            "<mxCell id=\"0\"/>" +
+            "<mxCell id=\"1\" parent=\"0\"/>" +
+            "<mxCell id=\"2\" value=\"Draw DSL\" style=\"rounded=1;whiteSpace=wrap;\" vertex=\"1\" parent=\"1\">" +
+            "<mxGeometry x=\"80\" y=\"80\" width=\"120\" height=\"60\" as=\"geometry\"/>" +
+            "</mxCell>" +
+            "</root>" +
+            "</mxGraphModel>";
 
     private final Project project;
     private final VirtualFile file;
@@ -35,7 +45,7 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
         browserPanel = new DrawDslBrowserPanel();
         Disposer.register(this, browserPanel);
 
-        DrawDslSidePanel sidePanel = new DrawDslSidePanel();
+        DrawDslSidePanel sidePanel = new DrawDslSidePanel(browserPanel);
 
         mainPanel = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT, browserPanel, sidePanel);
         mainPanel.setResizeWeight(0.75);
