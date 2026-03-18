@@ -96,8 +96,8 @@ No raw hex colors — all coloring goes through these tokens, ensuring styleshee
 ### Text Styles
 
 - **Headings:** `h1` (24px) `h2` (20px) `h3` (16px) `h4` (14px) — all bold
-- **Body:** `b1` (16px) `b2` (14px, default) `b3` (12px) `b4` (11px) `b5` (10px) `b6` (9px)
-- **Connection:** `ct1` (12px, default) `ct2` (10px)
+- **Body:** `b1` (16px) `b2` (14px) `b3` (12px, default shape label) `b4` (10px) `b5` (9px) `b6` (8px)
+- **Connection:** `ct1` (10px, default) `ct2` (9px)
 
 ### Connection Importance
 

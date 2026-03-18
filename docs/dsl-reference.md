@@ -1,6 +1,6 @@
 # DSL Reference
 
-> Back to [README](../README.md)
+> Back to [README](../README.md) | [Architecture](architecture.md) | [Stylesheet](stylesheet-reference.md)
 
 ## File Structure
 

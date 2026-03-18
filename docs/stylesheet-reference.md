@@ -1,6 +1,6 @@
 # Stylesheet Reference
 
-> Back to [README](../README.md) | Default stylesheet: [`diagram-styles.css`](../diagram-styles.css)
+> Back to [README](../README.md) | [Architecture](architecture.md) | [DSL Reference](dsl-reference.md) | Default stylesheet: [`diagram-styles.css`](../diagram-styles.css)
 
 The stylesheet uses a **CSS-subset** syntax with custom properties. It defines colors, fonts, text styles, and connection styles that the DSL references by token.
 

@@ -2,9 +2,9 @@
 
 A compact, coordinate-based DSL for [draw.io](https://draw.io) diagrams — designed for AI generation and editing.
 
-**Why?** AI models need a token-efficient, text-friendly format for creating and editing architecture diagrams. Auto-layout tools like Mermaid are limiting; raw draw.io XML is verbose and fragile. draw-dsl sits in the sweet spot: compact enough for an LLM context window, expressive enough for precise, creative layouts.
+## What is draw-dsl?
 
-**How it works:**
+AI models need a token-efficient, text-friendly format for creating and editing architecture diagrams. Auto-layout tools like Mermaid are limiting; raw draw.io XML is verbose and fragile. draw-dsl sits in the sweet spot: compact enough for an LLM context window, expressive enough for precise, creative layouts.
 
 ```
 diagram DSL (compact, human/LLM editable)
@@ -14,23 +14,47 @@ diagram DSL (compact, human/LLM editable)
 
 Diagrams are authored in DSL, rendered to `.drawio.svg` for storage in repos, and can be round-tripped back to DSL for editing. A shared CSS-subset stylesheet enforces consistent styling across all diagrams in a project.
 
----
-
-## Architecture
-
-Three layers:
-
-1. **CLI tool** (`diagram-tool`) — the core engine that parses, renders, and validates
-2. **MCP server** — thin wrapper exposing the CLI as structured tools for Claude Code
-3. **CLAUDE.md** — workflow instructions and condensed DSL reference so Claude knows when/how to use the tools
+**Key benefits:**
+- **AI-friendly** — compact token footprint, easy for LLMs to read and write
+- **GitHub-renderable** — `.drawio.svg` files display inline in markdown and PRs
+- **Consistent styling** — shared stylesheet with 10 color tokens and automatic light/dark theme switching
 
 ---
 
-## DSL Reference
+## Getting Started
 
-See [docs/dsl-reference.md](docs/dsl-reference.md) for the complete DSL specification — shapes, connections, groups, text, notes, and coordinate system.
+### Prerequisites
 
-**Quick syntax:**
+- **Node.js** (for running the CLI)
+- **draw.io Desktop** (for rendering — the CLI shells out to draw.io for SVG/PNG generation)
+
+### Your First Diagram
+
+1. Create a file called `example.dsl`:
+
+```
+diagram "My First Diagram"
+stylesheet "diagram-styles.css"
+
+rbox api "API Gateway" @100,50 c=c0
+rbox svc "Order Service" @100,180 c=c1
+cyl db "Postgres" @100,310 c=c4
+
+api -> svc "REST"
+svc -> db "query"
+```
+
+2. Render it:
+
+```bash
+diagram-tool render example.dsl -o example.drawio.svg
+```
+
+3. Open the `.drawio.svg` in a browser, or commit it to GitHub where it renders inline.
+
+---
+
+## Quick DSL Reference
 
 ```
 SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
@@ -42,66 +66,42 @@ text ID "label" @X,Y [text=CLASS]
 **Arrows:** `->` `-->` `=>` `==>` `--` `---` `<->` `<-->` `<=>` `*->` `o->` `#->` `~->` `+->`
 **Colors:** `c0`(blue) `c1`(green) `c2`(amber) `c3`(red) `c4`(purple) `c5`(indigo) `c6`(pink) `c7`(slate) `c8`(orange) `c9`(teal)
 
----
-
-## Stylesheet Reference
-
-See [docs/stylesheet-reference.md](docs/stylesheet-reference.md) for the complete stylesheet specification — CSS subset definition, theme system, all style definitions, and customization guide.
-
-**Default stylesheet:** [`diagram-styles.css`](diagram-styles.css)
-
-**Quick reference:**
-- **Text:** `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections), `mono` (code)
-- **Importance:** `imp=1`(bold) `imp=2`(normal) `imp=3`(thin) `imp=4`(thin-dashed)
-- **Themes:** SVG embeds both light + dark with automatic `prefers-color-scheme` switching. `--theme` flag forces a single theme for PNG/PDF export.
+Full specification: [docs/dsl-reference.md](docs/dsl-reference.md)
 
 ---
 
-## CLI Usage
+## Styling
 
-```bash
-diagram-tool parse <file.drawio.svg>        # .drawio.svg → DSL (stdout)
-diagram-tool render <file.dsl>              # DSL → .drawio.svg (stdout)
-diagram-tool render <file.dsl> -o out.svg   # DSL → file
-diagram-tool validate <file.dsl>            # Check DSL against rules
-```
+Diagrams use a shared stylesheet (`diagram-styles.css`) with:
 
-### Stylesheet Resolution
+- **10 color tokens** (`c0`–`c9`) — no raw hex colors allowed
+- **Text classes** — `h1`–`h4` (headings), `b1`–`b6` (body), `ct1`–`ct2` (connections), `mono` (code)
+- **Importance levels** — `imp=1`(bold) `imp=2`(normal) `imp=3`(thin) `imp=4`(thin-dashed)
+- **Automatic light/dark theme** — SVG embeds both themes with `prefers-color-scheme` switching
 
-The tool resolves the stylesheet in this order:
-
-1. `--stylesheet <path>` CLI flag
-2. `stylesheet` directive in the DSL file
-3. Search for `diagram-styles.css` in the input file's directory, then parent directories
-
-### Piping
-
-All commands support stdin/stdout for piping:
-
-```bash
-cat arch.dsl | diagram-tool render > arch.drawio.svg
-diagram-tool parse arch.drawio.svg | diagram-tool validate
-```
-
-### Supported Formats
-
-| Format | Read | Write | Notes |
-|--------|------|-------|-------|
-| `.drawio.svg` | yes | yes | **Default.** SVG with embedded draw.io XML. Renders on GitHub. |
-| `.drawio.png` | yes | yes | PNG with embedded draw.io XML metadata |
-| `.drawio` | yes | yes | Raw draw.io XML |
+Full specification: [docs/stylesheet-reference.md](docs/stylesheet-reference.md) | Default stylesheet: [`diagram-styles.css`](diagram-styles.css)
 
 ---
 
-## MCP Tools
+## Tools & Integrations
 
-| Tool | Input | Output | Description |
-|------|-------|--------|-------------|
-| `diagram_parse` | file path | DSL text | Convert .drawio.svg → DSL |
-| `diagram_render` | DSL text, output path | writes file | Convert DSL → .drawio.svg |
-| `diagram_validate` | DSL text | errors or OK | Check DSL against rules |
+### CLI
 
-Claude Code is the edit engine — it calls `diagram_parse` to read an existing diagram, edits the DSL directly, validates with `diagram_validate`, and renders with `diagram_render`.
+The `diagram-tool` CLI parses, renders, and validates diagrams. Supports piping, multiple output formats (`.drawio.svg`, `.drawio.png`, `.drawio`), and automatic stylesheet resolution.
+
+See [docs/architecture.md](docs/architecture.md) for full CLI usage, supported formats, and stylesheet resolution order.
+
+### MCP Server (Claude Code)
+
+An MCP server wraps the CLI as structured tools (`diagram_parse`, `diagram_render`, `diagram_validate`) so Claude Code can create and edit diagrams directly. Add the CLAUDE.md snippet to your project and Claude handles the full workflow.
+
+See [docs/architecture.md](docs/architecture.md) for MCP tool details and the CLAUDE.md snippet.
+
+### JetBrains Plugin
+
+A JetBrains IDE plugin for visual editing of `.drawio.svg` diagrams. Embeds draw.io as the canvas with custom side panels scoped to the draw-dsl subset — only the 17 shapes, 10 color tokens, and defined styles are exposed.
+
+See [jetbrains-plugin/README.md](jetbrains-plugin/README.md) for setup and architecture.
 
 ---
 
@@ -229,61 +229,14 @@ bastion -> ecs1 "SSH" --> imp=4
 
 ---
 
-## Workflow (CLAUDE.md Snippet)
+## Documentation
 
-This condensed reference goes in your project's `CLAUDE.md` for Claude Code:
-
-````markdown
-## Diagrams
-
-Use `diagram_parse`, `diagram_validate`, and `diagram_render` MCP tools to create/edit diagrams. Diagrams use draw-dsl format stored as `.drawio.svg`.
-
-### DSL Quick Reference
-
-```
-diagram "Title"
-stylesheet "diagram-styles.css"
-
-SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
-SOURCE -> TARGET ["label"] [c=C] [imp=N] [via X,Y ...]
-text ID "label" @X,Y [text=CLASS]
-```
-
-**Shapes:** box rbox dia circle ellipse cyl cloud para hex trap tri note doc actor queue step card
-**Arrows:** -> --> => ==> -- --- <-> <--> <=> *-> o-> #-> ~-> +->
-**Colors:** c0(blue) c1(green) c2(amber) c3(red) c4(purple) c5(indigo) c6(pink) c7(slate) c8(orange) c9(teal)
-**Text:** h1-h4 (headings) b1-b6 (body) ct1-ct2 (connections) mono (code)
-**Importance:** imp=1(bold) imp=2(normal) imp=3(thin) imp=4(thin-dashed)
-
-### Workflow
-1. Use `diagram_parse` to read existing .drawio.svg → DSL
-2. Edit the DSL text directly
-3. Use `diagram_validate` to check DSL before rendering
-4. Use `diagram_render` to write DSL → .drawio.svg
-5. Commit only the `.drawio.svg` file (DSL is transient)
-```
-````
-
----
-
-## Validation Rules
-
-The validator checks:
-
-| Rule | Description |
-|------|-------------|
-| **Unique IDs** | All shape/text IDs must be unique within a diagram |
-| **Valid shape keywords** | Only the 17 recognized shape types |
-| **Valid arrow syntax** | Only recognized arrow operators |
-| **No raw hex colors** | `c=` must use `c0`–`c9` tokens only; hex literals are rejected |
-| **Valid text classes** | `text=` must be `h1`–`h4`, `b1`–`b6`, `ct1`–`ct2`, or `mono` |
-| **Valid importance** | `imp=` must be `1`–`4` |
-| **Valid coordinates** | `@X,Y` must be non-negative integers |
-| **Valid sizes** | `WxH` must be positive integers |
-| **Group references** | `in=GROUP` must reference an existing shape ID |
-| **Connection endpoints** | Source and target IDs must exist |
-| **Waypoint format** | `via` coordinates must be valid `X,Y` pairs |
-| **Quoted strings** | Labels must be properly quoted |
+| Document | Description |
+|----------|-------------|
+| [DSL Reference](docs/dsl-reference.md) | Complete shape, connection, group, and text specification |
+| [Stylesheet Reference](docs/stylesheet-reference.md) | CSS subset, theme system, color palette, text styles |
+| [Architecture & Technical Reference](docs/architecture.md) | CLI usage, MCP tools, validation rules, CLAUDE.md snippet |
+| [JetBrains Plugin](jetbrains-plugin/README.md) | Visual editor plugin for JetBrains IDEs |
 
 ---
 
