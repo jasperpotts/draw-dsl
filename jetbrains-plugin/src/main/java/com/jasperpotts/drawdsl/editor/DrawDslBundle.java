@@ -1,4 +1,4 @@
-package com.jasperpotts.drawdsl.drawdsljetbrainsplugin;
+package com.jasperpotts.drawdsl.editor;
 
 import com.intellij.DynamicBundle;
 import org.jetbrains.annotations.Nls;
@@ -7,11 +7,11 @@ import org.jetbrains.annotations.PropertyKey;
 
 import java.util.function.Supplier;
 
-public final class MyMessageBundle {
-    private static final String BUNDLE = "messages.MyMessageBundle";
-    private static final DynamicBundle INSTANCE = new DynamicBundle(MyMessageBundle.class, BUNDLE);
+public final class DrawDslBundle {
+    private static final String BUNDLE = "messages.DrawDslBundle";
+    private static final DynamicBundle INSTANCE = new DynamicBundle(DrawDslBundle.class, BUNDLE);
 
-    private MyMessageBundle() {
+    private DrawDslBundle() {
     }
 
     public static @Nls String message(@NotNull @PropertyKey(resourceBundle = BUNDLE) String key, Object... params) {
