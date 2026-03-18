@@ -1,0 +1,1 @@
+rootProject.name = "drawdsl-jetbrains-plugin"
