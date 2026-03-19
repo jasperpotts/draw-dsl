@@ -26,6 +26,8 @@ import org.cef.network.CefRequest;
 import org.cef.network.CefResponse;
 import org.cef.network.CefURLRequest;
 
+import com.intellij.ui.JBColor;
+
 import javax.swing.*;
 import java.awt.*;
 import java.io.IOException;
@@ -89,48 +91,72 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
                     if (spaceDown) container.style.cursor = 'grab';
                 });
 
-                // Zoom: Ctrl/Cmd + scroll wheel
+                // Zoom: Ctrl/Cmd + scroll wheel — centered on cursor position
                 container.addEventListener('wheel', function(evt) {
+                    // Suppress zoom while spacebar-panning to avoid accidental zoom
+                    if (spaceDown) return;
                     if (evt.ctrlKey || evt.metaKey) {
                         evt.preventDefault();
-                        if (evt.deltaY < 0) graph.zoomIn();
-                        else graph.zoomOut();
+                        evt.stopPropagation();
+
+                        var rect = container.getBoundingClientRect();
+                        var mx = evt.clientX - rect.left;
+                        var my = evt.clientY - rect.top;
+                        var s = graph.view.scale;
+                        var t = graph.view.translate;
+                        var factor = evt.deltaY < 0 ? 1.2 : 1.0 / 1.2;
+                        var newScale = Math.max(0.01, Math.min(s * factor, 10));
+
+                        // Graph coordinate under cursor
+                        var gx = mx / s - t.x;
+                        var gy = my / s - t.y;
+
+                        // Translate so the same graph point stays under the cursor
+                        graph.view.scaleAndTranslate(
+                            newScale,
+                            mx / newScale - gx,
+                            my / newScale - gy
+                        );
                     }
                 }, { passive: false });
 
-                // Override loadDiagramXml to handle <mxfile> (compressed) format
+                // Load diagram XML — handles <mxfile> (compressed/uncompressed) and <mxGraphModel>
                 window.loadDiagramXml = function(xml) {
                     try {
                         var doc = mxUtils.parseXml(xml);
                         var root = doc.documentElement;
-                        console.log('[draw-dsl] loadDiagramXml root tag: ' + root.nodeName);
-                        console.log('[draw-dsl] Editor.extractGraphModel exists: ' + (typeof Editor.extractGraphModel));
-
                         var node = null;
+
+                        // Try draw.io's built-in extraction
                         if (typeof Editor.extractGraphModel === 'function') {
                             node = Editor.extractGraphModel(root, true);
-                            console.log('[draw-dsl] extractGraphModel returned: ' + (node ? node.nodeName : 'null'));
-                        }
-                        if (node == null) {
-                            // Fallback: if root is mxfile, try to find mxGraphModel inside
-                            if (root.nodeName === 'mxfile') {
-                                var diagrams = root.getElementsByTagName('diagram');
-                                console.log('[draw-dsl] mxfile has ' + diagrams.length + ' diagram(s)');
-                                if (diagrams.length > 0) {
-                                    var text = mxUtils.trim(mxUtils.getTextContent(diagrams[0]));
-                                    console.log('[draw-dsl] diagram text length: ' + text.length);
-                                    if (text.length > 0 && typeof Graph.decompress === 'function') {
-                                        var xmlStr = Graph.decompress(text);
-                                        console.log('[draw-dsl] decompressed length: ' + xmlStr.length);
-                                        var innerDoc = mxUtils.parseXml(xmlStr);
-                                        node = innerDoc.documentElement;
-                                    }
-                                }
-                            }
-                            if (node == null) node = root;
                         }
 
-                        console.log('[draw-dsl] loading node: ' + node.nodeName);
+                        // extractGraphModel may return <diagram> instead of <mxGraphModel>
+                        // for uncompressed mxfile content — dig deeper
+                        if (node != null && node.nodeName !== 'mxGraphModel') {
+                            var inner = node.getElementsByTagName('mxGraphModel');
+                            if (inner.length > 0) {
+                                node = inner[0];
+                            } else {
+                                // Try decompressing text content (base64-compressed diagram)
+                                var text = mxUtils.trim(mxUtils.getTextContent(node));
+                                if (text.length > 0 && typeof Graph.decompress === 'function') {
+                                    try {
+                                        var xmlStr = Graph.decompress(text);
+                                        var innerDoc = mxUtils.parseXml(xmlStr);
+                                        node = innerDoc.documentElement;
+                                    } catch(e2) { /* decompress failed, continue */ }
+                                }
+                            }
+                        }
+
+                        // Final fallback: find mxGraphModel anywhere in the document
+                        if (node == null || node.nodeName !== 'mxGraphModel') {
+                            var all = doc.getElementsByTagName('mxGraphModel');
+                            node = all.length > 0 ? all[0] : root;
+                        }
+
                         editor.setGraphXml(node);
                         // Force our canvas settings after resetGraph() overrides them
                         graph.pageVisible = false;
@@ -138,18 +164,17 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
                         graph.gridEnabled = true;
                         graph.defaultParent = null;
                         graph.fit();
-                        console.log('[draw-dsl] diagram loaded successfully');
                     } catch(e) {
                         console.error('[draw-dsl] loadDiagramXml error: ' + e);
                     }
                 };
 
-                // Theme support — called from Java
+                // Theme support — called from Java via applyTheme(isDark)
                 window.applyTheme = function(isDark) {
                     var bg = isDark ? '#1e1e1e' : '#ffffff';
                     var gridColor = isDark ? '#424242' : '#d0d0d0';
                     document.body.style.background = bg;
-                    graph.container.style.background = bg;
+                    container.style.background = bg;
                     graph.view.gridColor = gridColor;
                     graph.view.defaultGridColor = gridColor;
                     graph.refresh();
@@ -167,6 +192,10 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
     public DrawDslBrowserPanel() {
         super(new BorderLayout());
+
+        // Set panel background to match IDE theme immediately (prevents white flash)
+        boolean isDark = !JBColor.isBright();
+        setBackground(isDark ? new Color(0x1e1e1e) : Color.WHITE);
 
         if (!JBCefApp.isSupported()) {
             JLabel fallback = new JLabel(DrawDslBundle.message("browser.fallback.text"));
@@ -278,9 +307,10 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     }
 
     private void applyCurrentTheme(CefBrowser cefBrowser) {
-        var laf = javax.swing.UIManager.getLookAndFeel();
-        boolean isDark = laf != null &&
-                (laf.getName().contains("Dark") || laf.getName().contains("Darcula"));
+        boolean isDark = !JBColor.isBright();
+        // Sync Swing panel background so there's no white flash around the browser
+        Color panelBg = isDark ? new Color(0x1e1e1e) : Color.WHITE;
+        setBackground(panelBg);
         cefBrowser.executeJavaScript(
                 "applyTheme(" + isDark + ");",
                 cefBrowser.getURL(), 0);
