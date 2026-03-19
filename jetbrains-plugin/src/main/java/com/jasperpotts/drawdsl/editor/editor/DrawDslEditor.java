@@ -20,16 +20,11 @@ import javax.swing.*;
 import java.beans.PropertyChangeListener;
 
 public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
-    // Default diagram shown for new/empty files — includes a visible test shape
-    // so we can confirm end-to-end rendering at a glance.
     private static final String EMPTY_DIAGRAM =
             "<mxGraphModel>" +
             "<root>" +
             "<mxCell id=\"0\"/>" +
             "<mxCell id=\"1\" parent=\"0\"/>" +
-            "<mxCell id=\"2\" value=\"Draw DSL\" style=\"rounded=1;whiteSpace=wrap;\" vertex=\"1\" parent=\"1\">" +
-            "<mxGeometry x=\"80\" y=\"80\" width=\"120\" height=\"60\" as=\"geometry\"/>" +
-            "</mxCell>" +
             "</root>" +
             "</mxGraphModel>";
 
@@ -37,6 +32,8 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
     private final VirtualFile file;
     private final JSplitPane mainPanel;
     private final DrawDslBrowserPanel browserPanel;
+    /** Original file content, used to re-embed XML on save for .drawio.svg files */
+    private String originalFileContent;
 
     public DrawDslEditor(@NotNull Project project, @NotNull VirtualFile file) {
         this.project = project;
@@ -54,36 +51,34 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
         // Load file content into the browser
         Document document = FileDocumentManager.getInstance().getDocument(file);
         if (document != null) {
-            browserPanel.loadDiagramXml(extractXml(document.getText()));
+            originalFileContent = document.getText();
+            browserPanel.loadDiagramXml(extractXml(originalFileContent));
         }
 
-        // On diagram change: write back to the document so Ctrl+S / auto-save work normally
+        // On diagram change: re-embed XML into the original SVG wrapper (for .drawio.svg)
+        // or write raw XML (for .drawio files)
         browserPanel.setDiagramChangeListener(xml -> ApplicationManager.getApplication().invokeLater(() -> {
             Document doc = FileDocumentManager.getInstance().getDocument(file);
             if (doc != null && doc.isWritable()) {
+                String output = embedXml(xml);
                 WriteCommandAction.runWriteCommandAction(
                         project,
                         DrawDslBundle.message("editor.command.update"),
                         null,
-                        () -> doc.setText(xml)
+                        () -> doc.setText(output)
                 );
             }
         }));
     }
 
     /**
-     * Extracts the mxGraphModel XML from file content.
-     * Handles both raw mxGraphModel XML and .drawio.svg files where the XML
-     * is stored HTML-entity-encoded in a content="..." attribute on the SVG tag.
+     * Extracts the draw.io XML from file content.
+     * Priority: content attribute (SVG wrapper) → raw mxfile/mxGraphModel → fallback.
      */
     private static String extractXml(String content) {
-        // Raw mxGraphModel XML (e.g. .drawio files)
-        int idx = content.indexOf("<mxGraphModel");
-        if (idx >= 0) {
-            return content.substring(idx);
-        }
-
-        // .drawio.svg: XML is HTML-entity-encoded in the content attribute
+        // .drawio.svg: XML is HTML-entity-encoded in the content attribute on <svg>
+        // Check this FIRST — the SVG body may also contain literal <mxGraphModel
+        // in comments or foreignObject, and we want the full encoded source.
         int cStart = content.indexOf("content=\"");
         if (cStart >= 0) {
             cStart += "content=\"".length();
@@ -100,7 +95,39 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
             }
         }
 
+        // Raw mxGraphModel or mxfile XML (e.g. .drawio files)
+        int idx = content.indexOf("<mxGraphModel");
+        if (idx >= 0) {
+            return content.substring(idx);
+        }
+        idx = content.indexOf("<mxfile");
+        if (idx >= 0) {
+            return content.substring(idx);
+        }
+
         return EMPTY_DIAGRAM;
+    }
+
+    /**
+     * Re-embeds draw.io XML into the original file format.
+     * For .drawio.svg files, updates the content attribute in the SVG wrapper.
+     * For raw XML files, returns the XML as-is.
+     */
+    private String embedXml(String xml) {
+        if (originalFileContent != null && originalFileContent.contains("content=\"")) {
+            // Re-encode and replace the content attribute in the original SVG
+            String encoded = xml
+                    .replace("&", "&amp;")
+                    .replace("\"", "&quot;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                    .replace("\n", "&#10;");
+            return originalFileContent.replaceFirst(
+                    "content=\"[^\"]*\"",
+                    "content=\"" + encoded + "\"");
+        }
+        // Raw XML file — write as-is
+        return xml;
     }
 
     @Override

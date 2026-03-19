@@ -100,16 +100,48 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
                 // Override loadDiagramXml to handle <mxfile> (compressed) format
                 window.loadDiagramXml = function(xml) {
-                    var doc = mxUtils.parseXml(xml);
-                    var node = Editor.extractGraphModel(doc.documentElement, true);
-                    if (node == null) node = doc.documentElement;
-                    editor.setGraphXml(node);
-                    // Force our canvas settings after resetGraph() overrides them
-                    graph.pageVisible = false;
-                    graph.pageBreaksVisible = false;
-                    graph.gridEnabled = true;
-                    graph.defaultParent = null;
-                    graph.fit();
+                    try {
+                        var doc = mxUtils.parseXml(xml);
+                        var root = doc.documentElement;
+                        console.log('[draw-dsl] loadDiagramXml root tag: ' + root.nodeName);
+                        console.log('[draw-dsl] Editor.extractGraphModel exists: ' + (typeof Editor.extractGraphModel));
+
+                        var node = null;
+                        if (typeof Editor.extractGraphModel === 'function') {
+                            node = Editor.extractGraphModel(root, true);
+                            console.log('[draw-dsl] extractGraphModel returned: ' + (node ? node.nodeName : 'null'));
+                        }
+                        if (node == null) {
+                            // Fallback: if root is mxfile, try to find mxGraphModel inside
+                            if (root.nodeName === 'mxfile') {
+                                var diagrams = root.getElementsByTagName('diagram');
+                                console.log('[draw-dsl] mxfile has ' + diagrams.length + ' diagram(s)');
+                                if (diagrams.length > 0) {
+                                    var text = mxUtils.trim(mxUtils.getTextContent(diagrams[0]));
+                                    console.log('[draw-dsl] diagram text length: ' + text.length);
+                                    if (text.length > 0 && typeof Graph.decompress === 'function') {
+                                        var xmlStr = Graph.decompress(text);
+                                        console.log('[draw-dsl] decompressed length: ' + xmlStr.length);
+                                        var innerDoc = mxUtils.parseXml(xmlStr);
+                                        node = innerDoc.documentElement;
+                                    }
+                                }
+                            }
+                            if (node == null) node = root;
+                        }
+
+                        console.log('[draw-dsl] loading node: ' + node.nodeName);
+                        editor.setGraphXml(node);
+                        // Force our canvas settings after resetGraph() overrides them
+                        graph.pageVisible = false;
+                        graph.pageBreaksVisible = false;
+                        graph.gridEnabled = true;
+                        graph.defaultParent = null;
+                        graph.fit();
+                        console.log('[draw-dsl] diagram loaded successfully');
+                    } catch(e) {
+                        console.error('[draw-dsl] loadDiagramXml error: ' + e);
+                    }
                 };
 
                 // Theme support — called from Java
