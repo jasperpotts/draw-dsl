@@ -5,7 +5,7 @@
     <file type="web" url="file://$PROJECT_DIR$/jetbrains-plugin" />
   </component>
   <component name="JsBuildToolPackageJson" sorting="DEFINITION_ORDER" />
-  <component name="ProjectRootManager" version="2" languageLevel="JDK_25" project-jdk-name="temurin-21.0.6" project-jdk-type="JavaSDK">
+  <component name="ProjectRootManager" version="2" languageLevel="JDK_25" project-jdk-name="temurin-21" project-jdk-type="JavaSDK">
     <output url="file://$PROJECT_DIR$/out" />
   </component>
 </project>

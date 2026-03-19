@@ -1,7 +1,11 @@
 package com.jasperpotts.drawdsl.editor.browser;
 
+import com.intellij.ide.ui.LafManagerListener;
 import com.intellij.openapi.Disposable;
+import com.intellij.openapi.application.ApplicationManager;
+import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.util.Disposer;
+import com.intellij.util.messages.MessageBusConnection;
 import com.intellij.ui.jcef.JBCefApp;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
@@ -29,6 +33,8 @@ import java.io.InputStream;
 
 public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
+    private static final Logger LOG = Logger.getInstance(DrawDslBrowserPanel.class);
+
     public interface DiagramChangeListener {
         void onDiagramChanged(String xml);
     }
@@ -36,6 +42,90 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     // Fake origin used as base URL for loadHTML — lets CEF route relative script
     // requests through our request handler without any real network call.
     private static final String BASE_ORIGIN = "http://drawio-local";
+
+    /**
+     * JavaScript injected after page load to configure the canvas.
+     * Injected from Java (not editor.html) so it works regardless of JCEF caching.
+     */
+    private static final String CANVAS_CONFIG_JS = """
+            (function() {
+                // Infinite canvas — disable the white page overlay that hides the grid
+                graph.defaultPageVisible = false;
+                graph.pageVisible = false;
+                graph.pageBreaksVisible = false;
+
+                // Grid
+                graph.setGridEnabled(true);
+                graph.setGridSize(10);
+
+                // Pan: middle-mouse drag
+                graph.panningHandler.panningEnabled = true;
+                graph.panningHandler.useLeftButtonForPanning = false;
+
+                // Spacebar grab-hand pan (Figma/Illustrator style)
+                var container = graph.container;
+                var spaceDown = false;
+                document.addEventListener('keydown', function(evt) {
+                    if (evt.code === 'Space' && !evt.repeat && !spaceDown) {
+                        var tag = evt.target && evt.target.tagName;
+                        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+                        spaceDown = true;
+                        graph.panningHandler.useLeftButtonForPanning = true;
+                        container.style.cursor = 'grab';
+                        evt.preventDefault();
+                    }
+                });
+                document.addEventListener('keyup', function(evt) {
+                    if (evt.code === 'Space') {
+                        spaceDown = false;
+                        graph.panningHandler.useLeftButtonForPanning = false;
+                        container.style.cursor = '';
+                    }
+                });
+                container.addEventListener('mousedown', function() {
+                    if (spaceDown) container.style.cursor = 'grabbing';
+                });
+                container.addEventListener('mouseup', function() {
+                    if (spaceDown) container.style.cursor = 'grab';
+                });
+
+                // Zoom: Ctrl/Cmd + scroll wheel
+                container.addEventListener('wheel', function(evt) {
+                    if (evt.ctrlKey || evt.metaKey) {
+                        evt.preventDefault();
+                        if (evt.deltaY < 0) graph.zoomIn();
+                        else graph.zoomOut();
+                    }
+                }, { passive: false });
+
+                // Override loadDiagramXml to handle <mxfile> (compressed) format
+                window.loadDiagramXml = function(xml) {
+                    var doc = mxUtils.parseXml(xml);
+                    var node = Editor.extractGraphModel(doc.documentElement, true);
+                    if (node == null) node = doc.documentElement;
+                    editor.setGraphXml(node);
+                    // Force our canvas settings after resetGraph() overrides them
+                    graph.pageVisible = false;
+                    graph.pageBreaksVisible = false;
+                    graph.gridEnabled = true;
+                    graph.defaultParent = null;
+                    graph.fit();
+                };
+
+                // Theme support — called from Java
+                window.applyTheme = function(isDark) {
+                    var bg = isDark ? '#1e1e1e' : '#ffffff';
+                    var gridColor = isDark ? '#424242' : '#d0d0d0';
+                    document.body.style.background = bg;
+                    graph.container.style.background = bg;
+                    graph.view.gridColor = gridColor;
+                    graph.view.defaultGridColor = gridColor;
+                    graph.refresh();
+                };
+
+                console.log('[draw-dsl] canvas config injected');
+            })();
+            """;
 
     private JBCefBrowser browser;
     private JBCefJSQuery saveQuery;
@@ -59,6 +149,23 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         browser.getJBCefClient().addRequestHandler(
                 new DrawIoRequestHandler(), browser.getCefBrowser());
 
+        // Route JS console.log/warn/error to the IntelliJ log (Help → Show Log in Finder)
+        browser.getJBCefClient().addDisplayHandler(
+                new org.cef.handler.CefDisplayHandlerAdapter() {
+                    @Override
+                    public boolean onConsoleMessage(CefBrowser b,
+                            org.cef.CefSettings.LogSeverity level,
+                            String message, String source, int line) {
+                        String tag = "[JCEF:" + line + "] " + message;
+                        switch (level) {
+                            case LOGSEVERITY_ERROR -> LOG.error(tag);
+                            case LOGSEVERITY_WARNING -> LOG.warn(tag);
+                            default -> LOG.info(tag);
+                        }
+                        return false;
+                    }
+                }, browser.getCefBrowser());
+
         // Set up JS→Java save callback
         saveQuery = JBCefJSQuery.create((JBCefBrowserBase) browser);
         saveQuery.addHandler((xml) -> {
@@ -66,28 +173,53 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
             return null;
         });
 
-        // On page load: inject callback, then flush any pending XML
+        // On page load: inject callback, canvas config, and flush any pending XML.
+        // All JS configuration is injected here (not in editor.html) so it works
+        // even when JCEF serves a cached version of the HTML.
         browser.getJBCefClient().addLoadHandler(new CefLoadHandlerAdapter() {
             @Override
             public void onLoadEnd(CefBrowser cefBrowser, CefFrame frame, int statusCode) {
                 if (!frame.isMain()) return;
                 pageLoaded = true;
+
+                // 1. Save callback bridge
                 String inject = "window.__javaSaveCallback = function(xml) { "
                         + saveQuery.inject("xml") + " };";
                 cefBrowser.executeJavaScript(inject, cefBrowser.getURL(), 0);
+
+                // 2. Canvas configuration: infinite canvas, grid, zoom, pan
+                cefBrowser.executeJavaScript(CANVAS_CONFIG_JS, cefBrowser.getURL(), 0);
+
+                // 3. Load pending diagram XML
                 if (pendingXml != null) {
                     cefBrowser.executeJavaScript(
                             "loadDiagramXml(" + jsonString(pendingXml) + ");",
                             cefBrowser.getURL(), 0);
                     pendingXml = null;
                 }
+
+                // 4. Apply IDE theme
+                applyCurrentTheme(cefBrowser);
             }
         }, browser.getCefBrowser());
+
+        // Live theme switching
+        MessageBusConnection conn = ApplicationManager.getApplication()
+                .getMessageBus().connect();
+        Disposer.register(this, conn);
+        conn.subscribe(LafManagerListener.TOPIC, new LafManagerListener() {
+            @Override
+            public void lookAndFeelChanged(@org.jetbrains.annotations.NotNull com.intellij.ide.ui.LafManager manager) {
+                if (pageLoaded && browser != null) {
+                    applyCurrentTheme(browser.getCefBrowser());
+                }
+            }
+        });
 
         // Load via our intercepted scheme so the page URL is http://drawio-local/editor.html
         // (not the virtual file:///jbcefbrowser/ URL that loadHTML produces, which breaks
         // JCEF's GPU compositing and prevents SVG content from painting).
-        browser.loadURL(BASE_ORIGIN + "/editor.html");
+        browser.loadURL(BASE_ORIGIN + "/editor.html?v=" + System.currentTimeMillis());
         add(browser.getComponent(), BorderLayout.CENTER);
     }
 
@@ -111,6 +243,15 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         browser.getCefBrowser().executeJavaScript(
                 "insertShape(" + jsonString(style) + "," + x + "," + y + "," + w + "," + h + "," + jsonString(label) + ");",
                 browser.getCefBrowser().getURL(), 0);
+    }
+
+    private void applyCurrentTheme(CefBrowser cefBrowser) {
+        var laf = javax.swing.UIManager.getLookAndFeel();
+        boolean isDark = laf != null &&
+                (laf.getName().contains("Dark") || laf.getName().contains("Darcula"));
+        cefBrowser.executeJavaScript(
+                "applyTheme(" + isDark + ");",
+                cefBrowser.getURL(), 0);
     }
 
     private static String jsonString(String v) {
@@ -246,6 +387,7 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
                 CefResponse response, IntRef responseLength, StringRef redirectUrl) {
             response.setMimeType(mimeType);
             response.setStatus(200);
+            response.setHeaderByName("Cache-Control", "no-store", true);
             responseLength.set(-1);
         }
 

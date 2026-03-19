@@ -73,13 +73,33 @@ public class DrawDslEditor extends UserDataHolderBase implements FileEditor {
 
     /**
      * Extracts the mxGraphModel XML from file content.
-     * Handles both raw mxGraphModel XML and SVG files with embedded diagram data.
+     * Handles both raw mxGraphModel XML and .drawio.svg files where the XML
+     * is stored HTML-entity-encoded in a content="..." attribute on the SVG tag.
      */
     private static String extractXml(String content) {
+        // Raw mxGraphModel XML (e.g. .drawio files)
         int idx = content.indexOf("<mxGraphModel");
         if (idx >= 0) {
             return content.substring(idx);
         }
+
+        // .drawio.svg: XML is HTML-entity-encoded in the content attribute
+        int cStart = content.indexOf("content=\"");
+        if (cStart >= 0) {
+            cStart += "content=\"".length();
+            int cEnd = content.indexOf("\"", cStart);
+            if (cEnd > cStart) {
+                String encoded = content.substring(cStart, cEnd);
+                return encoded
+                        .replace("&lt;", "<")
+                        .replace("&gt;", ">")
+                        .replace("&amp;", "&")
+                        .replace("&quot;", "\"")
+                        .replace("&#10;", "\n")
+                        .replace("&#xa;", "\n");
+            }
+        }
+
         return EMPTY_DIAGRAM;
     }
 
