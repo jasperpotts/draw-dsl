@@ -94,7 +94,7 @@ export const ALL_ARROW_OPERATORS: readonly string[] = [
  * Reverse-map mxGraph edge style properties to a DSL arrow operator.
  * Returns the best-match arrow operator.
  */
-export function styleToArrow(style: string): { arrow: ArrowOperator; terminal?: TerminalMarker } {
+export function styleToArrow(style: string, strokeWidth?: number): { arrow: ArrowOperator; terminal?: TerminalMarker } {
   const props = parseEdgeStyleProps(style);
 
   // Check for terminal markers first
@@ -122,7 +122,12 @@ export function styleToArrow(style: string): { arrow: ArrowOperator; terminal?: 
   // Bidirectional
   if (hasStart && startArrow === "classic") {
     if (hasDash) return { arrow: "<-->" };
-    // Can't distinguish <=> from <-> without stroke width context
+    // Use strokeWidth to distinguish <=> (thick) from <-> (thin)
+    // Only at sw>=4 is it unambiguously thick (sw=2 is ambiguous with thin imp=2)
+    if (strokeWidth !== undefined && strokeWidth >= 4) {
+      const thickImp = strokeToImportance(strokeWidth, 2);
+      if (thickImp >= 1 && thickImp <= 3) return { arrow: "<=>" };
+    }
     return { arrow: "<->" };
   }
 
@@ -136,6 +141,15 @@ export function styleToArrow(style: string): { arrow: ArrowOperator; terminal?: 
   }
   if (effectiveEnd === "open" && effectiveEndFill === 0 && hasDash) {
     return { arrow: "+->", terminal: undefined };
+  }
+
+  // Check for thick arrow variants using strokeWidth context
+  // Only at sw>=4 is it unambiguously thick (sw=2 is ambiguous with thin imp=2)
+  if (strokeWidth !== undefined && strokeWidth >= 4) {
+    const thickImp = strokeToImportance(strokeWidth, 2);
+    if (thickImp >= 1 && thickImp <= 3) {
+      return { arrow: hasDash ? "==>" : "=>", terminal };
+    }
   }
 
   // Basic arrows — dashed variants

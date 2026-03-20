@@ -36,7 +36,7 @@ function sanitizeFontFamily(ff: string): string {
 
 /** Convert \n in labels to HTML line breaks for mxGraph. */
 function labelToHtml(label: string): string {
-  return escapeXml(label).replace(/\\n/g, "<br>");
+  return escapeXml(label).replace(/\\n/g, "&lt;br&gt;");
 }
 
 function colorProps(

@@ -26,7 +26,22 @@ export async function extractFromSvg(svgContent: string): Promise<string> {
   // draw.io embeds the mxfile XML as a URI-encoded string in the SVG content attribute
   const contentMatch = svgContent.match(/content="([^"]+)"/);
   if (contentMatch) {
-    return decodeURIComponent(contentMatch[1]);
+    const raw = contentMatch[1];
+    // Some draw.io exports use HTML entities instead of URI encoding
+    if (raw.includes("&lt;") || raw.includes("&amp;")) {
+      // Single-pass decode to avoid double-decoding (e.g. &amp;quot; → &quot; not ")
+      return raw.replace(/&(lt|gt|amp|quot|#10);/g, (_, entity) => {
+        switch (entity) {
+          case "lt": return "<";
+          case "gt": return ">";
+          case "amp": return "&";
+          case "quot": return '"';
+          case "#10": return "\n";
+          default: return `&${entity};`;
+        }
+      });
+    }
+    return decodeURIComponent(raw);
   }
 
   // Some versions embed it differently — look for an mxfile element directly

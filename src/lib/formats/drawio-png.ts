@@ -52,7 +52,7 @@ export async function extractFromPng(filePath: string): Promise<string> {
       const keyword = chunk.data.subarray(0, nullIdx).toString("ascii");
       const text = chunk.data.subarray(nullIdx + 1).toString("latin1");
 
-      if (keyword === "mxGraphModel") {
+      if (keyword === "mxGraphModel" || keyword === "mxfile") {
         return decodeURIComponent(text);
       }
     }

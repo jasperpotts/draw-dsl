@@ -110,11 +110,17 @@ const FONT_SIZE_TO_CLASS: Array<{ size: number; cls: TextSizeClass }> = [
   { size: 9, cls: "ct2" },
 ];
 
-function nearestTextClass(fontSize: number, isConnection: boolean): TextSizeClass {
+function nearestTextClass(fontSize: number, isConnection: boolean, isBold?: boolean): TextSizeClass {
   // For connections, prefer ct classes
   if (isConnection) {
     if (fontSize <= 9) return "ct2";
     if (fontSize <= 10) return "ct1";
+  }
+
+  // Disambiguate h3/b1 (both 16px) and h4/b2 (both 14px) using bold flag
+  if (!isConnection && isBold !== undefined) {
+    if (fontSize === 16) return isBold ? "h3" : "b1";
+    if (fontSize === 14) return isBold ? "h4" : "b2";
   }
 
   let best: TextSizeClass = "b3";
@@ -161,10 +167,9 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
 
   // Edge
   if (attrs.edge === "1" || source || target) {
-    const { arrow, terminal } = styleToArrow(style);
-    const route = styleToRoute(style);
-
     const strokeWidth = Number(getStyleProp(style, "strokeWidth") ?? "1");
+    const { arrow, terminal } = styleToArrow(style, strokeWidth);
+    const route = styleToRoute(style);
     const multiplier = ARROW_MULTIPLIER[arrow];
     const importance = strokeToImportance(strokeWidth, multiplier);
     const isDashed = getStyleProp(style, "dashed") === "1";
@@ -228,10 +233,14 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const width = Number(geom?.width ?? 120);
     const height = Number(geom?.height ?? 60);
 
+    // Extract fontStyle bitmask (bit 0 = bold)
+    const fontStyleVal = Number(getStyleProp(style, "fontStyle") ?? "0");
+    const isBold = (fontStyleVal & 1) === 1;
+
     // Text element detection
     if (style.startsWith("text;") || (style.includes("fillColor=none") && style.includes("strokeColor=none"))) {
       const fontSize = Number(getStyleProp(style, "fontSize") ?? "14");
-      const textSize = nearestTextClass(fontSize, false);
+      const textSize = nearestTextClass(fontSize, false, isBold);
       const fontFamily = getStyleProp(style, "fontFamily") ?? "";
       const isMono = /mono|consolas|courier/i.test(fontFamily);
 
@@ -261,7 +270,7 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const color = fillColor ? nearestColorToken(fillColor) : undefined;
 
     const fontSize = Number(getStyleProp(style, "fontSize") ?? "12");
-    const textSize = nearestTextClass(fontSize, false);
+    const textSize = nearestTextClass(fontSize, false, isBold);
     const fontFamily = getStyleProp(style, "fontFamily") ?? "";
     const isMono = /mono|consolas|courier/i.test(fontFamily);
 
