@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #1e1e1e; }
+    #canvas { position: absolute; inset: 0; }
+  </style>
+  <script>
+    var urlParams = {};
+    var mxBasePath = './js/mxgraph';
+    var mxForceIncludes = false;
+    var mxResourceExtension = '.txt';
+    var mxLoadResources = false;
+    var mxLoadStylesheets = false;
+  </script>
+  <script src="./js/PreConfig.js"></script>
+</head>
+<body>
+  <div id="canvas"></div>
+
+  <script src="./js/app.min.js"></script>
+
+  <script>
+    var graph, editor;
+
+    (function init() {
+      try {
+        var container = document.getElementById('canvas');
+        graph = new Graph(container);
+
+        // Infinite canvas — no page/paper overlay (its white SVG rect covers the grid).
+        // Must be set before Editor() so resetGraph() picks up the default.
+        graph.defaultPageVisible = false;
+        graph.pageVisible = false;
+
+        editor = new Editor(true, null, null, graph, true);
+        new mxRubberband(graph);
+
+        // Grid
+        graph.setGridEnabled(true);
+        graph.setGridSize(10);
+
+        // Pan: middle-mouse drag
+        graph.panningHandler.panningEnabled = true;
+        graph.panningHandler.useLeftButtonForPanning = false;
+
+        // Spacebar grab-hand pan (Figma/Illustrator style)
+        var spaceDown = false;
+        document.addEventListener('keydown', function(evt) {
+          if (evt.code === 'Space' && !evt.repeat && !spaceDown) {
+            var tag = evt.target && evt.target.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+            spaceDown = true;
+            graph.panningHandler.useLeftButtonForPanning = true;
+            container.style.cursor = 'grab';
+            evt.preventDefault();
+          }
+        });
+        document.addEventListener('keyup', function(evt) {
+          if (evt.code === 'Space') {
+            spaceDown = false;
+            graph.panningHandler.useLeftButtonForPanning = false;
+            container.style.cursor = '';
+          }
+        });
+        container.addEventListener('mousedown', function() {
+          if (spaceDown) container.style.cursor = 'grabbing';
+        });
+        container.addEventListener('mouseup', function() {
+          if (spaceDown) container.style.cursor = 'grab';
+        });
+
+        // Zoom: Ctrl+scroll (or Cmd+scroll on Mac)
+        container.addEventListener('wheel', function(evt) {
+          if (evt.ctrlKey || evt.metaKey) {
+            evt.preventDefault();
+            if (evt.deltaY < 0) graph.zoomIn();
+            else graph.zoomOut();
+          }
+        }, { passive: false });
+
+        var saveTimer = null;
+        graph.getModel().addListener('change', function() {
+          clearTimeout(saveTimer);
+          saveTimer = setTimeout(function() {
+            if (window.__javaSaveCallback) window.__javaSaveCallback(getDiagramXml());
+          }, 300);
+        });
+
+        console.log('[draw-dsl] editor.html v2 init complete');
+      } catch(e) {
+        console.error('[draw-dsl] init error:', e);
+      }
+    })();
+
+    function loadDiagramXml(xml) {
+      var doc = mxUtils.parseXml(xml);
+      editor.setGraphXml(doc.documentElement);
+      // resetGraph() reads pageVisible from the XML's page= attribute; force it off.
+      graph.pageVisible = false;
+      graph.gridEnabled = true;
+      // setGraphXml replaces the model root, so graph.defaultParent becomes a
+      // stale reference to the pre-decode cell. Reset it so subsequent operations
+      // (insertVertex, getSelectionCells etc.) resolve from the live model.
+      graph.defaultParent = null;
+      graph.fit();
+    }
+
+    function getDiagramXml() {
+      return mxUtils.getXml(editor.getGraphXml());
+    }
+
+    function insertShape(style, x, y, w, h, label) {
+      graph.getModel().beginUpdate();
+      try {
+        graph.insertVertex(graph.getDefaultParent(), null, label || '', x, y, w, h, style);
+      } finally {
+        graph.getModel().endUpdate();
+      }
+    }
+
+    function applyTheme(isDark) {
+      var bg = isDark ? '#1e1e1e' : '#ffffff';
+      var gridColor = isDark ? '#424242' : '#d0d0d0';
+      document.body.style.background = bg;
+      graph.container.style.background = bg;
+      graph.view.gridColor = gridColor;
+      graph.view.defaultGridColor = gridColor;
+      graph.refresh();
+    }
+
+    function applyStyleToSelection(styleKey, styleValue) {
+      var cells = graph.getSelectionCells();
+      if (cells.length === 0) return;
+      graph.setCellStyles(styleKey, styleValue, cells);
+    }
+  </script>
+</body>
+</html>
