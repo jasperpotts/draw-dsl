@@ -26,7 +26,13 @@ export type ShapeKeyword =
   | "document"
   | "person"
   | "step"
-  | "card";
+  | "card"
+  | "swimlane"
+  | "process"
+  | "cube"
+  | "curlyBracket"
+  | "flexArrow"
+  | "umlActor";
 
 /** Arrow operators recognised by the parser. */
 export type ArrowOperator =
@@ -63,6 +69,7 @@ export type TextSizeClass =
 export interface TextClass {
   size?: TextSizeClass;
   mono?: boolean;
+  italic?: boolean;
 }
 
 /** Connection routing styles. */
@@ -87,6 +94,9 @@ export interface Size {
 // Diagram elements
 // ---------------------------------------------------------------------------
 
+export type HAlign = "left" | "center" | "right";
+export type VAlign = "top" | "middle" | "bottom";
+
 export interface Shape {
   kind: "shape";
   /** Shape keyword — one of 16 known, or any string for Rule 3 shapes. */
@@ -97,6 +107,10 @@ export interface Shape {
   size?: Size;
   color?: ColorToken;
   textClass?: TextClass;
+  align?: HAlign;
+  verticalAlign?: VAlign;
+  /** Whether this shape acts as a container. */
+  container?: boolean;
   /** Parent group shape ID. */
   group?: string;
   /** Source line number (1-based). */
@@ -115,6 +129,12 @@ export interface Connection {
   importance?: ImportanceLevel;
   route?: RouteType;
   waypoints?: Position[];
+  /** Entry anchor point on target (0.0–1.0). */
+  entryX?: number;
+  entryY?: number;
+  /** Exit anchor point on source (0.0–1.0). */
+  exitX?: number;
+  exitY?: number;
   /** Source line number (1-based). */
   line?: number;
 }

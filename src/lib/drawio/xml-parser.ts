@@ -9,7 +9,7 @@ import { parseStringPromise } from "xml2js";
 import type {
   Diagram, DiagramElement, Shape, Connection, TextElement,
   ColorToken, TextClass, TextSizeClass, ImportanceLevel, RouteType,
-  Position,
+  Position, HAlign, VAlign,
 } from "../dsl/types.js";
 import { styleToShape } from "./shape-map.js";
 import { styleToArrow, styleToRoute, strokeToImportance, ARROW_MULTIPLIER } from "./arrow-map.js";
@@ -217,10 +217,20 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     if (terminal) conn.terminal = terminal;
     if (label) conn.label = label;
     if (color) conn.color = color;
-    if (textClass.size || textClass.mono) conn.textClass = textClass;
+    if (textClass.size || textClass.mono || textClass.italic) conn.textClass = textClass;
     if (effectiveImp !== 3) conn.importance = effectiveImp as ImportanceLevel;
     if (route !== "ortho") conn.route = route;
     if (waypoints.length > 0) conn.waypoints = waypoints;
+
+    // Anchor points
+    const entryX = getStyleProp(style, "entryX");
+    if (entryX !== undefined) conn.entryX = Number(entryX);
+    const entryY = getStyleProp(style, "entryY");
+    if (entryY !== undefined) conn.entryY = Number(entryY);
+    const exitX = getStyleProp(style, "exitX");
+    if (exitX !== undefined) conn.exitX = Number(exitX);
+    const exitY = getStyleProp(style, "exitY");
+    if (exitY !== undefined) conn.exitY = Number(exitY);
 
     return conn;
   }
@@ -233,9 +243,10 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const width = Number(geom?.width ?? 120);
     const height = Number(geom?.height ?? 60);
 
-    // Extract fontStyle bitmask (bit 0 = bold)
+    // Extract fontStyle bitmask (bit 0 = bold, bit 1 = italic)
     const fontStyleVal = Number(getStyleProp(style, "fontStyle") ?? "0");
     const isBold = (fontStyleVal & 1) === 1;
+    const isItalic = (fontStyleVal & 2) === 2;
 
     // Text element detection
     if (style.startsWith("text;") || (style.includes("fillColor=none") && style.includes("strokeColor=none"))) {
@@ -250,6 +261,7 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
       const textClass: TextClass = {};
       if (textSize !== "b2") textClass.size = textSize;
       if (isMono) textClass.mono = true;
+      if (isItalic) textClass.italic = true;
 
       const text: TextElement = {
         kind: "text",
@@ -259,7 +271,7 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
       };
 
       if (color) text.color = color;
-      if (textClass.size || textClass.mono) text.textClass = textClass;
+      if (textClass.size || textClass.mono || textClass.italic) text.textClass = textClass;
 
       return text;
     }
@@ -277,6 +289,7 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const textClass: TextClass = {};
     if (textSize !== "b3") textClass.size = textSize;
     if (isMono) textClass.mono = true;
+    if (isItalic) textClass.italic = true;
 
     const shape: Shape = {
       kind: "shape",
@@ -290,7 +303,19 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     shape.size = { width, height };
 
     if (color) shape.color = color;
-    if (textClass.size || textClass.mono) shape.textClass = textClass;
+    if (textClass.size || textClass.mono || textClass.italic) shape.textClass = textClass;
+
+    // Text alignment
+    const align = getStyleProp(style, "align");
+    if (align === "left" || align === "right") shape.align = align as HAlign;
+
+    const verticalAlign = getStyleProp(style, "verticalAlign");
+    if (verticalAlign === "top" || verticalAlign === "bottom") shape.verticalAlign = verticalAlign as VAlign;
+
+    // Container
+    if (getStyleProp(style, "container") === "1" || style.includes("swimlane")) {
+      shape.container = true;
+    }
 
     // Group — parent other than "1" means it's inside a group
     if (parent && parent !== "1" && parent !== "0") {
@@ -330,7 +355,26 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
   }
 
   // Build parent map for group coordinate conversion
-  const cells: unknown[] = root.mxCell ?? [];
+  // Collect all cells: plain mxCells + UserObject-wrapped mxCells
+  const rawMxCells: unknown[] = root.mxCell ?? [];
+  const userObjects: unknown[] = root.UserObject ?? [];
+
+  const cells: unknown[] = [...rawMxCells];
+  for (const uo of userObjects) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const uoAttrs = (uo as any).$ ?? {};
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const innerCells = (uo as any).mxCell ?? [];
+    for (const inner of innerCells) {
+      // Merge UserObject id/label onto inner mxCell
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const merged = { ...(inner as any) };
+      merged.$ = { ...(merged.$ ?? {}), id: uoAttrs.id };
+      if (uoAttrs.label !== undefined) merged.$.value = uoAttrs.label;
+      cells.push(merged);
+    }
+  }
+
   const parentMap = new Map<string, unknown[]>();
 
   const elements: DiagramElement[] = [];
@@ -351,18 +395,27 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     }
   }
 
+  // Build cell ID → parent ID map for all cells (used for coordinate conversion)
+  const cellParents = new Map<string, string>();
+  for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    if (attrs.id && attrs.parent && attrs.parent !== "0" && attrs.parent !== "1") {
+      cellParents.set(attrs.id, attrs.parent);
+    }
+  }
+
   for (const cell of cells) {
     const el = parseCell(cell, parentMap);
     if (el) elements.push(el);
   }
 
-  // Post-pass: convert parent-relative coordinates to absolute for grouped shapes
-  // and convert parent mxCell IDs to DSL IDs
+  // Post-pass: convert parent-relative coordinates to absolute for ALL positioned elements
   for (const el of elements) {
-    if (el.kind === "shape" && el.group) {
-      // The group field currently holds the parent's mxCell ID
-      // Coordinates are relative to parent — convert to absolute
-      const parentPos = cellPositions.get(el.group);
+    if ((el.kind === "shape" || el.kind === "text") && cellParents.has(el.id)) {
+      const parentId = cellParents.get(el.id)!;
+      const parentPos = cellPositions.get(parentId);
       if (parentPos) {
         el.position.x += parentPos.x;
         el.position.y += parentPos.y;

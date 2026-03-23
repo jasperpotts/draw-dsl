@@ -9,7 +9,7 @@ import type {
   Diagram, DiagramElement, Shape, Connection, TextElement,
   ArrowOperator, TerminalMarker, ColorToken, TextClass,
   TextSizeClass, RouteType, ImportanceLevel, Position, Size,
-  ParseError,
+  ParseError, HAlign, VAlign,
 } from "./types.js";
 import { ALL_ARROW_OPERATORS, BIDIRECTIONAL_ARROWS } from "../drawio/arrow-map.js";
 import { KNOWN_SHAPES } from "../drawio/shape-map.js";
@@ -65,6 +65,8 @@ function parseTextClass(value: string): TextClass | null {
   for (const part of parts) {
     if (part === "mono") {
       result.mono = true;
+    } else if (part === "italic") {
+      result.italic = true;
     } else if (VALID_SIZE_CLASSES.has(part)) {
       result.size = part as TextSizeClass;
     } else {
@@ -211,6 +213,20 @@ function parseShapeLine(
         } else {
           errors.push({ line: lineNum, message: `Invalid text class '${kv.value}'` });
         }
+      } else if (kv.key === "align") {
+        if (kv.value === "left" || kv.value === "center" || kv.value === "right") {
+          shape.align = kv.value as HAlign;
+        } else {
+          errors.push({ line: lineNum, message: `Invalid align value '${kv.value}'` });
+        }
+      } else if (kv.key === "valign") {
+        if (kv.value === "top" || kv.value === "middle" || kv.value === "bottom") {
+          shape.verticalAlign = kv.value as VAlign;
+        } else {
+          errors.push({ line: lineNum, message: `Invalid valign value '${kv.value}'` });
+        }
+      } else if (kv.key === "container") {
+        shape.container = kv.value === "true";
       } else if (kv.key === "in") {
         shape.group = kv.value;
       } else {
@@ -315,6 +331,18 @@ function parseConnectionLine(
           connection.route = kv.value as RouteType;
         } else {
           errors.push({ line: lineNum, message: `Invalid route type '${kv.value}'` });
+        }
+      } else if (kv.key === "entry") {
+        const parts = kv.value.split(",");
+        if (parts.length === 2) {
+          connection.entryX = Number(parts[0]);
+          connection.entryY = Number(parts[1]);
+        }
+      } else if (kv.key === "exit") {
+        const parts = kv.value.split(",");
+        if (parts.length === 2) {
+          connection.exitX = Number(parts[0]);
+          connection.exitY = Number(parts[1]);
         }
       } else {
         errors.push({ line: lineNum, message: `Unknown connection attribute '${kv.key}'` });

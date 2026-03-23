@@ -75,7 +75,7 @@ function textStyleProps(
 
   let fontStyle = 0; // 0=normal, 1=bold, 2=italic, 3=bold+italic
   if (classDef["font-weight"] === "bold") fontStyle |= 1;
-  if (classDef["font-style"] === "italic") fontStyle |= 2;
+  if (classDef["font-style"] === "italic" || textClass?.italic) fontStyle |= 2;
 
   let fontFamily: string | undefined;
   if (mono) {
@@ -343,8 +343,8 @@ export function buildMxGraphXml(
 
       let style = getShapeStyle(el.shapeType);
 
-      // Container flag
-      if (isContainer) {
+      // Container flag — from AST or inferred from children
+      if (isContainer || el.container) {
         style += "container=1;";
       }
 
@@ -377,6 +377,14 @@ export function buildMxGraphXml(
       style += `fontSize=${textProps.fontSize};`;
       if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
       if (fontFamily) style += `fontFamily=${fontFamily};`;
+
+      // Text alignment
+      if (el.align && el.align !== "center") {
+        style += `align=${el.align};`;
+      }
+      if (el.verticalAlign && el.verticalAlign !== "middle") {
+        style += `verticalAlign=${el.verticalAlign};`;
+      }
 
       const size = el.size ?? getDefaultSize(el.shapeType);
 
@@ -480,6 +488,19 @@ export function buildMxGraphXml(
       style += `fontSize=${textProps.fontSize};`;
       if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
       if (textProps.fontFamily) style += `fontFamily=${textProps.fontFamily};`;
+      // Anchor points
+      if (el.entryX !== undefined) style += `entryX=${el.entryX};`;
+      if (el.entryY !== undefined) style += `entryY=${el.entryY};`;
+      if (el.exitX !== undefined) style += `exitX=${el.exitX};`;
+      if (el.exitY !== undefined) style += `exitY=${el.exitY};`;
+      // draw.io also needs entryDx/Dy/exitDx/Dy when anchors are specified
+      if (el.entryX !== undefined || el.entryY !== undefined) {
+        style += `entryDx=0;entryDy=0;`;
+      }
+      if (el.exitX !== undefined || el.exitY !== undefined) {
+        style += `exitDx=0;exitDy=0;`;
+      }
+
       style += `html=1;`;
 
       const label = el.label ? labelToHtml(el.label) : "";

@@ -12,6 +12,7 @@ export const KNOWN_SHAPES: ReadonlySet<string> = new Set<ShapeKeyword>([
   "box", "rbox", "diamond", "circle", "ellipse", "cylinder", "cloud",
   "parallelogram", "hexagon", "trapezoid", "triangle", "note", "document",
   "person", "step", "card",
+  "swimlane", "process", "cube", "curlyBracket", "flexArrow", "umlActor",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,12 @@ export const SHAPE_TO_STYLE: Record<string, string> = {
   person: "shape=mxgraph.basic.person;whiteSpace=wrap;html=1;",
   step: "shape=step;perimeter=stepPerimeter;whiteSpace=wrap;html=1;fixedSize=1;size=20;",
   card: "shape=card;whiteSpace=wrap;html=1;size=20;",
+  swimlane: "swimlane;whiteSpace=wrap;html=1;startSize=23;",
+  process: "shape=process;whiteSpace=wrap;html=1;backgroundOutline=1;",
+  cube: "shape=cube;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;darkOpacity=0.05;darkOpacity2=0.1;",
+  curlyBracket: "shape=curlyBracket;whiteSpace=wrap;html=1;rounded=1;",
+  flexArrow: "shape=flexArrow;whiteSpace=wrap;html=1;",
+  umlActor: "shape=umlActor;whiteSpace=wrap;html=1;verticalLabelPosition=bottom;verticalAlign=top;",
 };
 
 // ---------------------------------------------------------------------------
@@ -58,6 +65,12 @@ export const DEFAULT_SIZES: Record<string, Size> = {
   person: { width: 40, height: 60 },
   step: { width: 120, height: 60 },
   card: { width: 120, height: 80 },
+  swimlane: { width: 200, height: 150 },
+  process: { width: 120, height: 60 },
+  cube: { width: 120, height: 80 },
+  curlyBracket: { width: 20, height: 120 },
+  flexArrow: { width: 100, height: 50 },
+  umlActor: { width: 30, height: 55 },
 };
 
 /** Default size for unknown Rule 3 shapes. */
@@ -70,6 +83,12 @@ export const DEFAULT_SIZE: Size = { width: 120, height: 60 };
 /** Ordered list of patterns to try when reverse-mapping a style string. */
 const STYLE_TO_SHAPE_PATTERNS: Array<{ test: (s: string) => boolean; keyword: ShapeKeyword }> = [
   // Must test specific shapes before generic ones
+  { test: (s) => /\bswimlane\b/.test(s), keyword: "swimlane" as ShapeKeyword },
+  { test: (s) => /shape=flexArrow/.test(s), keyword: "flexArrow" as ShapeKeyword },
+  { test: (s) => /shape=curlyBracket/.test(s), keyword: "curlyBracket" as ShapeKeyword },
+  { test: (s) => /shape=process/.test(s), keyword: "process" as ShapeKeyword },
+  { test: (s) => /shape=cube/.test(s), keyword: "cube" as ShapeKeyword },
+  { test: (s) => /shape=umlActor/.test(s), keyword: "umlActor" as ShapeKeyword },
   { test: (s) => /shape=mxgraph\.basic\.person/.test(s), keyword: "person" },
   { test: (s) => /shape=cloud/.test(s), keyword: "cloud" },
   { test: (s) => /shape=cylinder3/.test(s), keyword: "cylinder" },

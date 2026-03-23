@@ -16,7 +16,10 @@ interface NormalizedShape {
   position: { x: number; y: number };
   size?: { width: number; height: number };
   color?: string;
-  textClass?: { size?: string; mono?: boolean };
+  textClass?: { size?: string; mono?: boolean; italic?: boolean };
+  align?: string;
+  verticalAlign?: string;
+  container?: boolean;
   groupLabel?: string; // resolved from group ID → parent label
 }
 
@@ -28,10 +31,14 @@ interface NormalizedConnection {
   terminal?: string;
   label?: string;
   color?: string;
-  textClass?: { size?: string; mono?: boolean };
+  textClass?: { size?: string; mono?: boolean; italic?: boolean };
   importance?: number;
   route?: string;
   waypoints?: { x: number; y: number }[];
+  entryX?: number;
+  entryY?: number;
+  exitX?: number;
+  exitY?: number;
 }
 
 interface NormalizedText {
@@ -39,7 +46,7 @@ interface NormalizedText {
   label: string;
   position: { x: number; y: number };
   color?: string;
-  textClass?: { size?: string; mono?: boolean };
+  textClass?: { size?: string; mono?: boolean; italic?: boolean };
 }
 
 type NormalizedElement = NormalizedShape | NormalizedConnection | NormalizedText;
@@ -100,8 +107,13 @@ function normalizeShape(shape: Shape, idToLabel: Map<string, string>): Normalize
   if (shape.textClass) {
     const tc = { ...shape.textClass };
     if (tc.size === "b3") delete tc.size;
-    if (tc.size || tc.mono) result.textClass = tc;
+    if (tc.size || tc.mono || tc.italic) result.textClass = tc;
   }
+
+  // Alignment
+  if (shape.align && shape.align !== "center") result.align = shape.align;
+  if (shape.verticalAlign && shape.verticalAlign !== "middle") result.verticalAlign = shape.verticalAlign;
+  if (shape.container) result.container = true;
 
   // Resolve group ID to parent label
   if (shape.group) {
@@ -127,7 +139,7 @@ function normalizeConnection(conn: Connection, idToLabel: Map<string, string>): 
   if (conn.textClass) {
     const tc = { ...conn.textClass };
     if (tc.size === "ct1") delete tc.size;
-    if (tc.size || tc.mono) result.textClass = tc;
+    if (tc.size || tc.mono || tc.italic) result.textClass = tc;
   }
 
   // Normalize importance: 3 is default, gets elided
@@ -143,6 +155,11 @@ function normalizeConnection(conn: Connection, idToLabel: Map<string, string>): 
   if (conn.waypoints && conn.waypoints.length > 0) {
     result.waypoints = conn.waypoints.map((wp) => ({ ...wp }));
   }
+
+  if (conn.entryX !== undefined) result.entryX = conn.entryX;
+  if (conn.entryY !== undefined) result.entryY = conn.entryY;
+  if (conn.exitX !== undefined) result.exitX = conn.exitX;
+  if (conn.exitY !== undefined) result.exitY = conn.exitY;
 
   return result;
 }

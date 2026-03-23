@@ -10,6 +10,7 @@ function serializeTextClass(tc: TextClass): string {
   const parts: string[] = [];
   if (tc.size) parts.push(tc.size);
   if (tc.mono) parts.push("mono");
+  if (tc.italic) parts.push("italic");
   return parts.join(",");
 }
 
@@ -29,6 +30,15 @@ function serializeShape(shape: Shape): string {
   if (shape.textClass) {
     const tc = serializeTextClass(shape.textClass);
     if (tc) parts.push(`text=${tc}`);
+  }
+  if (shape.align && shape.align !== "center") {
+    parts.push(`align=${shape.align}`);
+  }
+  if (shape.verticalAlign && shape.verticalAlign !== "middle") {
+    parts.push(`valign=${shape.verticalAlign}`);
+  }
+  if (shape.container) {
+    parts.push(`container=true`);
   }
   if (shape.group) {
     parts.push(`in=${shape.group}`);
@@ -56,6 +66,12 @@ function serializeConnection(conn: Connection): string {
   // Only emit non-default route (default is ortho)
   if (conn.route && conn.route !== "ortho") {
     parts.push(`route=${conn.route}`);
+  }
+  if (conn.entryX !== undefined && conn.entryY !== undefined) {
+    parts.push(`entry=${conn.entryX},${conn.entryY}`);
+  }
+  if (conn.exitX !== undefined && conn.exitY !== undefined) {
+    parts.push(`exit=${conn.exitX},${conn.exitY}`);
   }
   if (conn.waypoints && conn.waypoints.length > 0) {
     parts.push("via");
