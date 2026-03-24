@@ -6,6 +6,7 @@ import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.diagnostic.Logger;
 import com.intellij.openapi.util.Disposer;
 import com.intellij.util.messages.MessageBusConnection;
+import com.intellij.ui.JBColor;
 import com.intellij.ui.jcef.JBCefApp;
 import com.intellij.ui.jcef.JBCefBrowser;
 import com.intellij.ui.jcef.JBCefBrowserBase;
@@ -26,13 +27,24 @@ import org.cef.network.CefRequest;
 import org.cef.network.CefResponse;
 import org.cef.network.CefURLRequest;
 
-import com.intellij.ui.JBColor;
-
 import javax.swing.*;
 import java.awt.*;
 import java.io.IOException;
 import java.io.InputStream;
 
+/**
+ * Embeds the full draw.io editor via JCEF using draw.io's embed protocol.
+ * <p>
+ * Communication uses the standard embed protocol (proto=json):
+ * <ul>
+ *   <li>draw.io → Java: {@code {event: 'init'}}, {@code {event: 'autosave', xml: '...'}}, {@code {event: 'save', xml: '...'}}</li>
+ *   <li>Java → draw.io: {@code {action: 'load', xml: '...', autosave: 1}}</li>
+ * </ul>
+ * <p>
+ * The trick: editor.html sets {@code window.opener = window} before draw.io loads.
+ * draw.io sends messages to {@code window.opener.postMessage(...)}, which becomes
+ * {@code window.postMessage(...)} — so messages stay in-page where our listener catches them.
+ */
 public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
     private static final Logger LOG = Logger.getInstance(DrawDslBrowserPanel.class);
@@ -41,148 +53,10 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         void onDiagramChanged(String xml);
     }
 
-    // Fake origin used as base URL for loadHTML — lets CEF route relative script
-    // requests through our request handler without any real network call.
     private static final String BASE_ORIGIN = "http://drawio-local";
 
-    /**
-     * JavaScript injected after page load to configure the canvas.
-     * Injected from Java (not editor.html) so it works regardless of JCEF caching.
-     */
-    private static final String CANVAS_CONFIG_JS = """
-            (function() {
-                // Infinite canvas — disable the white page overlay that hides the grid
-                graph.defaultPageVisible = false;
-                graph.pageVisible = false;
-                graph.pageBreaksVisible = false;
-
-                // Grid
-                graph.setGridEnabled(true);
-                graph.setGridSize(10);
-
-                // Pan: middle-mouse drag
-                graph.panningHandler.panningEnabled = true;
-                graph.panningHandler.useLeftButtonForPanning = false;
-
-                // Spacebar grab-hand pan (Figma/Illustrator style)
-                var container = graph.container;
-                var spaceDown = false;
-                document.addEventListener('keydown', function(evt) {
-                    if (evt.code === 'Space' && !evt.repeat && !spaceDown) {
-                        var tag = evt.target && evt.target.tagName;
-                        if (tag === 'INPUT' || tag === 'TEXTAREA') return;
-                        spaceDown = true;
-                        graph.panningHandler.useLeftButtonForPanning = true;
-                        container.style.cursor = 'grab';
-                        evt.preventDefault();
-                    }
-                });
-                document.addEventListener('keyup', function(evt) {
-                    if (evt.code === 'Space') {
-                        spaceDown = false;
-                        graph.panningHandler.useLeftButtonForPanning = false;
-                        container.style.cursor = '';
-                    }
-                });
-                container.addEventListener('mousedown', function() {
-                    if (spaceDown) container.style.cursor = 'grabbing';
-                });
-                container.addEventListener('mouseup', function() {
-                    if (spaceDown) container.style.cursor = 'grab';
-                });
-
-                // Zoom: Ctrl/Cmd + scroll wheel — centered on cursor position
-                container.addEventListener('wheel', function(evt) {
-                    // Suppress zoom while spacebar-panning to avoid accidental zoom
-                    if (spaceDown) return;
-                    if (evt.ctrlKey || evt.metaKey) {
-                        evt.preventDefault();
-                        evt.stopPropagation();
-
-                        var rect = container.getBoundingClientRect();
-                        var mx = evt.clientX - rect.left;
-                        var my = evt.clientY - rect.top;
-                        var s = graph.view.scale;
-                        var t = graph.view.translate;
-                        var factor = evt.deltaY < 0 ? 1.2 : 1.0 / 1.2;
-                        var newScale = Math.max(0.01, Math.min(s * factor, 10));
-
-                        // Graph coordinate under cursor
-                        var gx = mx / s - t.x;
-                        var gy = my / s - t.y;
-
-                        // Translate so the same graph point stays under the cursor
-                        graph.view.scaleAndTranslate(
-                            newScale,
-                            mx / newScale - gx,
-                            my / newScale - gy
-                        );
-                    }
-                }, { passive: false });
-
-                // Load diagram XML — handles <mxfile> (compressed/uncompressed) and <mxGraphModel>
-                window.loadDiagramXml = function(xml) {
-                    try {
-                        var doc = mxUtils.parseXml(xml);
-                        var root = doc.documentElement;
-                        var node = null;
-
-                        // Try draw.io's built-in extraction
-                        if (typeof Editor.extractGraphModel === 'function') {
-                            node = Editor.extractGraphModel(root, true);
-                        }
-
-                        // extractGraphModel may return <diagram> instead of <mxGraphModel>
-                        // for uncompressed mxfile content — dig deeper
-                        if (node != null && node.nodeName !== 'mxGraphModel') {
-                            var inner = node.getElementsByTagName('mxGraphModel');
-                            if (inner.length > 0) {
-                                node = inner[0];
-                            } else {
-                                // Try decompressing text content (base64-compressed diagram)
-                                var text = mxUtils.trim(mxUtils.getTextContent(node));
-                                if (text.length > 0 && typeof Graph.decompress === 'function') {
-                                    try {
-                                        var xmlStr = Graph.decompress(text);
-                                        var innerDoc = mxUtils.parseXml(xmlStr);
-                                        node = innerDoc.documentElement;
-                                    } catch(e2) { /* decompress failed, continue */ }
-                                }
-                            }
-                        }
-
-                        // Final fallback: find mxGraphModel anywhere in the document
-                        if (node == null || node.nodeName !== 'mxGraphModel') {
-                            var all = doc.getElementsByTagName('mxGraphModel');
-                            node = all.length > 0 ? all[0] : root;
-                        }
-
-                        editor.setGraphXml(node);
-                        // Force our canvas settings after resetGraph() overrides them
-                        graph.pageVisible = false;
-                        graph.pageBreaksVisible = false;
-                        graph.gridEnabled = true;
-                        graph.defaultParent = null;
-                        graph.fit();
-                    } catch(e) {
-                        console.error('[draw-dsl] loadDiagramXml error: ' + e);
-                    }
-                };
-
-                // Theme support — called from Java via applyTheme(isDark)
-                window.applyTheme = function(isDark) {
-                    var bg = isDark ? '#1e1e1e' : '#ffffff';
-                    var gridColor = isDark ? '#424242' : '#d0d0d0';
-                    document.body.style.background = bg;
-                    container.style.background = bg;
-                    graph.view.gridColor = gridColor;
-                    graph.view.defaultGridColor = gridColor;
-                    graph.refresh();
-                };
-
-                console.log('[draw-dsl] canvas config injected');
-            })();
-            """;
+    // Bridge JS is now in editor.html (must run before draw.io scripts).
+    // Java only needs to set __javaSaveCallback and __pendingLoadXml.
 
     private JBCefBrowser browser;
     private JBCefJSQuery saveQuery;
@@ -193,7 +67,6 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     public DrawDslBrowserPanel() {
         super(new BorderLayout());
 
-        // Set panel background to match IDE theme immediately (prevents white flash)
         boolean isDark = !JBColor.isBright();
         setBackground(isDark ? new Color(0x1e1e1e) : Color.WHITE);
 
@@ -210,7 +83,7 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         browser.getJBCefClient().addRequestHandler(
                 new DrawIoRequestHandler(), browser.getCefBrowser());
 
-        // Route JS console.log/warn/error to the IntelliJ log (Help → Show Log in Finder)
+        // Route JS console to IntelliJ log
         browser.getJBCefClient().addDisplayHandler(
                 new org.cef.handler.CefDisplayHandlerAdapter() {
                     @Override
@@ -227,40 +100,36 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
                     }
                 }, browser.getCefBrowser());
 
-        // Set up JS→Java save callback
+        // JS→Java bridge for save callbacks
         saveQuery = JBCefJSQuery.create((JBCefBrowserBase) browser);
         saveQuery.addHandler((xml) -> {
             if (changeListener != null) changeListener.onDiagramChanged(xml);
             return null;
         });
 
-        // On page load: inject callback, canvas config, and flush any pending XML.
-        // All JS configuration is injected here (not in editor.html) so it works
-        // even when JCEF serves a cached version of the HTML.
+        // On page load: wire up the Java←JS save callback and queue pending XML.
+        // The embed protocol bridge (message listener, __loadDiagram) is already
+        // in editor.html so it's ready before draw.io sends {event: 'init'}.
         browser.getJBCefClient().addLoadHandler(new CefLoadHandlerAdapter() {
             @Override
             public void onLoadEnd(CefBrowser cefBrowser, CefFrame frame, int statusCode) {
                 if (!frame.isMain()) return;
                 pageLoaded = true;
 
-                // 1. Save callback bridge
+                // Wire up JS→Java save callback
                 String inject = "window.__javaSaveCallback = function(xml) { "
                         + saveQuery.inject("xml") + " };";
                 cefBrowser.executeJavaScript(inject, cefBrowser.getURL(), 0);
 
-                // 2. Canvas configuration: infinite canvas, grid, zoom, pan
-                cefBrowser.executeJavaScript(CANVAS_CONFIG_JS, cefBrowser.getURL(), 0);
-
-                // 3. Load pending diagram XML
+                // Queue pending diagram XML via the reactive property in editor.html.
+                // The setter triggers __loadDiagram immediately if draw.io is ready,
+                // or holds it until the 'init' event fires — no race condition.
                 if (pendingXml != null) {
                     cefBrowser.executeJavaScript(
-                            "loadDiagramXml(" + jsonString(pendingXml) + ");",
+                            "window.__pendingLoadXml = " + jsonString(pendingXml) + ";",
                             cefBrowser.getURL(), 0);
                     pendingXml = null;
                 }
-
-                // 4. Apply IDE theme
-                applyCurrentTheme(cefBrowser);
             }
         }, browser.getCefBrowser());
 
@@ -271,17 +140,37 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
         conn.subscribe(LafManagerListener.TOPIC, new LafManagerListener() {
             @Override
             public void lookAndFeelChanged(@org.jetbrains.annotations.NotNull com.intellij.ide.ui.LafManager manager) {
-                if (pageLoaded && browser != null) {
-                    applyCurrentTheme(browser.getCefBrowser());
+                if (browser != null) {
+                    reloadWithCurrentTheme();
                 }
             }
         });
 
-        // Load via our intercepted scheme so the page URL is http://drawio-local/editor.html
-        // (not the virtual file:///jbcefbrowser/ URL that loadHTML produces, which breaks
-        // JCEF's GPU compositing and prevents SVG content from painting).
-        browser.loadURL(BASE_ORIGIN + "/editor.html?v=" + System.currentTimeMillis());
+        // Load draw.io with embed protocol params
+        browser.loadURL(buildEditorUrl(isDark));
         add(browser.getComponent(), BorderLayout.CENTER);
+    }
+
+    private String buildEditorUrl(boolean isDark) {
+        return BASE_ORIGIN + "/editor.html"
+                + "?embed=1"
+                + "&proto=json"
+                + "&spin=1"
+                + "&libraries=1"
+                + "&dark=" + (isDark ? "1" : "0")
+                + "&v=" + System.currentTimeMillis();
+    }
+
+    /**
+     * Reload the editor with the current IDE theme.
+     * draw.io's dark mode is set via URL param at load time.
+     */
+    private void reloadWithCurrentTheme() {
+        boolean isDark = !JBColor.isBright();
+        setBackground(isDark ? new Color(0x1e1e1e) : Color.WHITE);
+        // TODO: investigate if draw.io has a runtime dark mode toggle to avoid full reload
+        // For now, we don't reload — the user can reopen the file.
+        // A full reload would lose unsaved changes.
     }
 
     public void setDiagramChangeListener(DiagramChangeListener listener) {
@@ -291,8 +180,9 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     public void loadDiagramXml(String xml) {
         if (browser == null) return;
         if (pageLoaded) {
+            // Reactive property in editor.html handles the timing
             browser.getCefBrowser().executeJavaScript(
-                    "loadDiagramXml(" + jsonString(xml) + ");",
+                    "window.__pendingLoadXml = " + jsonString(xml) + ";",
                     browser.getCefBrowser().getURL(), 0);
         } else {
             pendingXml = xml;
@@ -300,20 +190,7 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
     }
 
     public void insertShape(String style, int x, int y, int w, int h, String label) {
-        if (browser == null || !pageLoaded) return;
-        browser.getCefBrowser().executeJavaScript(
-                "insertShape(" + jsonString(style) + "," + x + "," + y + "," + w + "," + h + "," + jsonString(label) + ");",
-                browser.getCefBrowser().getURL(), 0);
-    }
-
-    private void applyCurrentTheme(CefBrowser cefBrowser) {
-        boolean isDark = !JBColor.isBright();
-        // Sync Swing panel background so there's no white flash around the browser
-        Color panelBg = isDark ? new Color(0x1e1e1e) : Color.WHITE;
-        setBackground(panelBg);
-        cefBrowser.executeJavaScript(
-                "applyTheme(" + isDark + ");",
-                cefBrowser.getURL(), 0);
+        // Not applicable in full draw.io UI mode — shapes are added via draw.io's own sidebar
     }
 
     private static String jsonString(String v) {
@@ -340,8 +217,6 @@ public class DrawDslBrowserPanel extends JPanel implements Disposable {
 
     // -------------------------------------------------------------------------
     // Intercept http://drawio-local/... → serve from classpath /drawio/...
-    // CEF calls getResourceRequestHandler before any DNS/network operation,
-    // so the unresolvable host never causes a network error.
     // -------------------------------------------------------------------------
 
     private static class DrawIoRequestHandler extends CefRequestHandlerAdapter {
