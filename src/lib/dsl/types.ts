@@ -109,6 +109,10 @@ export interface Shape {
   textClass?: TextClass;
   align?: HAlign;
   verticalAlign?: VAlign;
+  /** Whether the shape has no fill (transparent background). */
+  noFill?: boolean;
+  /** Border stroke width (default is 1, omitted when 1). */
+  strokeWidth?: number;
   /** Whether this shape acts as a container. */
   container?: boolean;
   /** Parent group shape ID. */

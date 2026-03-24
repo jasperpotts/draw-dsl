@@ -119,8 +119,8 @@ export function styleToArrow(style: string, strokeWidth?: number): { arrow: Arro
     return { arrow: hasDash ? "---" : "--" };
   }
 
-  // Bidirectional
-  if (hasStart && startArrow === "classic") {
+  // Bidirectional — treat startArrow=block same as classic for bidirectional detection
+  if (hasStart && (startArrow === "classic" || startArrow === "block")) {
     if (hasDash) return { arrow: "<-->" };
     // Use strokeWidth to distinguish <=> (thick) from <-> (thin)
     // Only at sw>=4 is it unambiguously thick (sw=2 is ambiguous with thin imp=2)

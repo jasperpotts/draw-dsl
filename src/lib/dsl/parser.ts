@@ -225,6 +225,19 @@ function parseShapeLine(
         } else {
           errors.push({ line: lineNum, message: `Invalid valign value '${kv.value}'` });
         }
+      } else if (kv.key === "fill") {
+        if (kv.value === "none") {
+          shape.noFill = true;
+        } else {
+          errors.push({ line: lineNum, message: `Invalid fill value '${kv.value}'` });
+        }
+      } else if (kv.key === "sw") {
+        const sw = Number(kv.value);
+        if (Number.isFinite(sw) && sw > 0) {
+          shape.strokeWidth = sw;
+        } else {
+          errors.push({ line: lineNum, message: `Invalid stroke width '${kv.value}'` });
+        }
       } else if (kv.key === "container") {
         shape.container = kv.value === "true";
       } else if (kv.key === "in") {

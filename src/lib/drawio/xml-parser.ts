@@ -62,32 +62,152 @@ function colorDistance(a: [number, number, number], b: [number, number, number])
 }
 
 /**
- * Find the nearest color token for a hex color.
- * Checks both light and dark palettes.
+ * Check if a color is near-white (all RGB channels > 240).
  */
-function nearestColorToken(hex: string): ColorToken | undefined {
+function isNearWhite(hex: string): boolean {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return false;
+  return rgb[0] > 240 && rgb[1] > 240 && rgb[2] > 240;
+}
+
+/**
+ * Find the nearest color token for a hex color.
+ * Only checks the light palette — matching against dark palette causes
+ * false positives (e.g., black matching dark-theme fills).
+ */
+function nearestColorToken(hex: string, channel?: "fill" | "stroke"): ColorToken | undefined {
   const rgb = hexToRgb(hex);
   if (!rgb) return undefined;
 
   let bestToken: ColorToken | undefined;
   let bestDist = Infinity;
 
-  for (const palette of [LIGHT_PALETTE, DARK_PALETTE]) {
-    for (const [token, colors] of Object.entries(palette)) {
-      for (const colorHex of [colors.fill, colors.stroke, colors.font]) {
-        const cRgb = hexToRgb(colorHex);
-        if (!cRgb) continue;
-        const dist = colorDistance(rgb, cRgb);
-        if (dist < bestDist) {
-          bestDist = dist;
-          bestToken = token as ColorToken;
-        }
+  for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
+    // If a specific channel is requested, only check that channel
+    const candidates = channel
+      ? [channel === "fill" ? colors.fill : colors.stroke]
+      : [colors.fill, colors.stroke, colors.font];
+    for (const colorHex of candidates) {
+      const cRgb = hexToRgb(colorHex);
+      if (!cRgb) continue;
+      const dist = colorDistance(rgb, cRgb);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestToken = token as ColorToken;
       }
     }
   }
 
   // Only match if reasonably close
   if (bestDist > 80) return undefined;
+  return bestToken;
+}
+
+// ---------------------------------------------------------------------------
+// HSL helpers for hue-based matching
+// ---------------------------------------------------------------------------
+
+function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return { h: 0, s: 0, l };
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  let h = 0;
+  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+  else if (max === g) h = ((b - r) / d + 2) / 6;
+  else h = ((r - g) / d + 4) / 6;
+  return { h: h * 360, s, l };
+}
+
+/** Angular distance between two hues (0–180). */
+function hueDist(h1: number, h2: number): number {
+  const d = Math.abs(h1 - h2);
+  return d > 180 ? 360 - d : d;
+}
+
+/**
+ * Find the best color token considering both fill and stroke colors together.
+ * Uses hue-based matching for saturated fills, RGB distance for desaturated ones.
+ */
+function bestColorTokenForShape(
+  fillHex: string | undefined,
+  strokeHex: string | undefined,
+): ColorToken | undefined {
+  const fillRgb = fillHex ? hexToRgb(fillHex) : null;
+  const strokeRgb = strokeHex ? hexToRgb(strokeHex) : null;
+
+  if (!fillRgb && !strokeRgb) return undefined;
+
+  // Check if fill is saturated (not gray/white/black)
+  const fillHsl = fillRgb ? rgbToHsl(fillRgb[0], fillRgb[1], fillRgb[2]) : null;
+  const fillIsSaturated = fillHsl ? fillHsl.s > 0.15 : false;
+
+  // Very dark + desaturated fills (dark gray/black) should use defaults, not a color token
+  // These don't visually match any pastel palette color
+  if (fillHsl && fillHsl.l < 0.25 && fillHsl.s < 0.2) {
+    return undefined;
+  }
+
+  // For saturated fills, use hue-based matching against palette fill AND stroke colors
+  // (palette fills are pastels, strokes are brighter — both carry the token's hue)
+  if (fillIsSaturated && fillHsl && fillRgb) {
+    let bestToken: ColorToken | undefined;
+    let bestHueDist = Infinity;
+
+    for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
+      // Check hue distance against both fill and stroke, take the minimum
+      let minHd = Infinity;
+      for (const colorHex of [colors.fill, colors.stroke]) {
+        const cRgb = hexToRgb(colorHex);
+        if (!cRgb) continue;
+        const cHsl = rgbToHsl(cRgb[0], cRgb[1], cRgb[2]);
+        // Skip desaturated palette colors
+        if (cHsl.s < 0.2) continue;
+        const hd = hueDist(fillHsl.h, cHsl.h);
+        if (hd < minHd) minHd = hd;
+      }
+      if (minHd < bestHueDist) {
+        bestHueDist = minHd;
+        bestToken = token as ColorToken;
+      }
+    }
+
+    // Only use hue match if within 45 degrees
+    if (bestHueDist <= 45 && bestToken) return bestToken;
+  }
+
+  // For desaturated fills (white, gray, etc.), use RGB distance with defaults comparison
+  const defaultFillRgb = hexToRgb("#ffffff")!;
+  const defaultStrokeRgb = hexToRgb("#9ca3af")!;
+
+  let bestToken: ColorToken | undefined;
+  let bestScore = Infinity;
+
+  // Score using defaults (no token)
+  let defaultScore = 0;
+  if (fillRgb) defaultScore += colorDistance(fillRgb, defaultFillRgb);
+  if (strokeRgb) defaultScore += colorDistance(strokeRgb, defaultStrokeRgb);
+  bestScore = defaultScore;
+
+  for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
+    let score = 0;
+    if (fillRgb) {
+      const tokenFillRgb = hexToRgb(colors.fill);
+      if (tokenFillRgb) score += colorDistance(fillRgb, tokenFillRgb);
+    }
+    if (strokeRgb) {
+      const tokenStrokeRgb = hexToRgb(colors.stroke);
+      if (tokenStrokeRgb) score += colorDistance(strokeRgb, tokenStrokeRgb);
+    }
+    if (score < bestScore) {
+      bestScore = score;
+      bestToken = token as ColorToken;
+    }
+  }
+
   return bestToken;
 }
 
@@ -175,9 +295,9 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const isDashed = getStyleProp(style, "dashed") === "1";
     const effectiveImp = isDashed && importance === 3 ? 4 : importance;
 
-    // Color from stroke
+    // Color from stroke — only match against palette stroke colors
     const strokeColor = getStyleProp(style, "strokeColor");
-    const color = strokeColor ? nearestColorToken(strokeColor) : undefined;
+    const color = strokeColor ? nearestColorToken(strokeColor, "stroke") : undefined;
 
     // Text class
     const fontSize = Number(getStyleProp(style, "fontSize") ?? "10");
@@ -296,7 +416,11 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     // Shape
     const shapeType = styleToShape(style);
     const fillColor = getStyleProp(style, "fillColor");
-    const color = fillColor ? nearestColorToken(fillColor) : undefined;
+    const strokeColor = getStyleProp(style, "strokeColor");
+    const color = bestColorTokenForShape(
+      fillColor && fillColor !== "none" ? fillColor : undefined,
+      strokeColor && strokeColor !== "none" ? strokeColor : undefined,
+    );
 
     const fontSize = Number(getStyleProp(style, "fontSize") ?? "12");
     const textSize = nearestTextClass(fontSize, false, isBold);
@@ -319,8 +443,20 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     // Size — only include if non-default
     shape.size = { width, height };
 
+    // Detect noFill for non-text vertices
+    if (fillColor === "none") {
+      shape.noFill = true;
+    }
+
     if (color) shape.color = color;
     if (textClass.size || textClass.mono || textClass.italic) shape.textClass = textClass;
+
+    // Stroke width
+    const strokeWidthStr = getStyleProp(style, "strokeWidth");
+    if (strokeWidthStr) {
+      const sw = Number(strokeWidthStr);
+      if (!isNaN(sw) && sw !== 1) shape.strokeWidth = sw;
+    }
 
     // Text alignment
     const align = getStyleProp(style, "align");
@@ -415,6 +551,24 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       list.push(c);
       childrenByParent.set(parent, list);
     }
+  }
+
+  // Classify merged Visio containers by dimensions + stencil properties
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  function classifyMergedShape(containerStyle: string, width: number, height: number, stencilChildren: any[]): string {
+    const aspect = width / height;
+    const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
+    const stencilRounded = stencilStyle.includes("rounded=1");
+    const containerRounded = containerStyle.includes("rounded=1");
+    const isRounded = stencilRounded || containerRounded;
+
+    // Square + single stencil → circle
+    if (stencilChildren.length === 1 && aspect >= 0.8 && aspect <= 1.2 && width >= 40) {
+      if (isRounded || width >= 60) return "circle";
+    }
+
+    if (isRounded) return "rbox";
+    return "box";
   }
 
   // Identify Visio cell groups: invisible container with stencil children + optional text child.
@@ -534,22 +688,38 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       const height = Number(geom?.height ?? 60);
 
       const style: string = attrs.style ?? "";
-      const isRounded = style.includes("rounded=1");
+      const shapeType = classifyMergedShape(style, width, height, stencilChildren);
 
       const shape: Shape = {
         kind: "shape",
-        shapeType: isRounded ? "rbox" : "box",
+        shapeType,
         id,
         label: textLabel,
         position: { x, y },
         size: { width, height },
       };
 
-      // Try to get color from the first stencil child's stroke
+      // Detect noFill: only when stencil child actually has no fill
       const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
+      const stencilFill = getStyleProp(stencilStyle, "fillColor");
+      if (!stencilFill || stencilFill === "none") {
+        shape.noFill = true;
+      }
+
+      // Determine color token using stencil fill + stroke together
       const stencilStroke = getStyleProp(stencilStyle, "strokeColor");
-      const color = stencilStroke ? nearestColorToken(stencilStroke) : undefined;
+      const color = bestColorTokenForShape(
+        stencilFill && stencilFill !== "none" ? stencilFill : undefined,
+        stencilStroke && stencilStroke !== "none" ? stencilStroke : undefined,
+      );
       if (color) shape.color = color;
+
+      // Stroke width from stencil child
+      const stencilStrokeWidth = getStyleProp(stencilStyle, "strokeWidth");
+      if (stencilStrokeWidth) {
+        const sw = Number(stencilStrokeWidth);
+        if (!isNaN(sw) && sw !== 1) shape.strokeWidth = sw;
+      }
 
       // Group — parent other than "1" means it's inside a group
       const parent = attrs.parent;

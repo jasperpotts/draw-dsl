@@ -27,6 +27,12 @@ function serializeShape(shape: Shape): string {
   if (shape.color) {
     parts.push(`c=${shape.color}`);
   }
+  if (shape.noFill) {
+    parts.push(`fill=none`);
+  }
+  if (shape.strokeWidth !== undefined && shape.strokeWidth !== 1) {
+    parts.push(`sw=${shape.strokeWidth}`);
+  }
   if (shape.textClass) {
     const tc = serializeTextClass(shape.textClass);
     if (tc) parts.push(`text=${tc}`);

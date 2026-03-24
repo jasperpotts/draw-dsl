@@ -360,7 +360,11 @@ export function buildMxGraphXml(
       };
       const colors = colorProps(effectiveColor, themeProps, defaults);
 
-      style += `fillColor=${colors.fillColor};`;
+      if (el.noFill) {
+        style += `fillColor=none;`;
+      } else {
+        style += `fillColor=${colors.fillColor};`;
+      }
       style += `strokeColor=${colors.strokeColor};`;
       style += `fontColor=${colors.fontColor};`;
 
@@ -377,6 +381,11 @@ export function buildMxGraphXml(
       style += `fontSize=${textProps.fontSize};`;
       if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
       if (fontFamily) style += `fontFamily=${fontFamily};`;
+
+      // Stroke width
+      if (el.strokeWidth !== undefined && el.strokeWidth !== 1) {
+        style += `strokeWidth=${el.strokeWidth};`;
+      }
 
       // Text alignment
       if (el.align && el.align !== "center") {
@@ -453,12 +462,11 @@ export function buildMxGraphXml(
 
       let style = "";
 
-      // Routing
+      // Routing — always emit edgeStyle for fidelity
       const route = el.route ?? "ortho";
       const edgeStyle = ROUTE_TO_STYLE[route];
-      if (edgeStyle && edgeStyle !== "none") {
-        style += `edgeStyle=${edgeStyle};`;
-      }
+      style += `edgeStyle=${edgeStyle};`;
+      style += `rounded=1;`;
 
       // Arrow endpoints
       let endArrow = arrowProps.endArrow;
@@ -471,18 +479,23 @@ export function buildMxGraphXml(
 
       if (endArrow) style += `endArrow=${endArrow};`;
       if (endFill !== undefined) style += `endFill=${endFill};`;
-      if (arrowProps.startArrow) style += `startArrow=${arrowProps.startArrow};`;
+      // Always emit startArrow for fidelity (explicit none when no start arrow)
+      style += `startArrow=${arrowProps.startArrow ?? "none"};`;
       if (arrowProps.startFill !== undefined) style += `startFill=${arrowProps.startFill};`;
 
       style += `strokeWidth=${strokeWidth};`;
       if (isDashed) style += `dashed=1;`;
 
-      // Color
+      // Color — always emit strokeColor for edges
       if (el.color) {
         const strokeColor = themeProps[`--${el.color}-stroke`];
         const fontColor = themeProps[`--${el.color}-font`];
         if (strokeColor) style += `strokeColor=${strokeColor};`;
         if (fontColor) style += `fontColor=${fontColor};`;
+      } else {
+        // Use default stroke for edges without a color token
+        const defaultStroke = themeProps["--default-stroke"] ?? "#9ca3af";
+        style += `strokeColor=${defaultStroke};`;
       }
 
       // Text style
@@ -503,7 +516,7 @@ export function buildMxGraphXml(
         style += `exitDx=0;exitDy=0;`;
       }
 
-      style += `html=1;`;
+      style += `verticalAlign=middle;html=1;`;
 
       const label = el.label ? labelToHtml(el.label) : "";
 
