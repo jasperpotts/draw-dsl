@@ -1,19 +1,17 @@
 /**
- * XML Builder: AST + resolved stylesheet → mxGraph XML string
+ * XML Builder v2: AST + resolved stylesheet → mxGraph XML string
  *
  * Converts a Diagram AST into a complete mxfile XML that draw.io can render.
+ * Style properties pass through from the AST's StyleMap, with theme variable
+ * ($c0.fill, $font.mono, etc.) resolution against the stylesheet.
  */
 
-import type {
-  Diagram, Shape, Connection, TextElement, DiagramElement,
-  ColorToken, TextClass, ImportanceLevel, Position,
-} from "../dsl/types.js";
+import type { Diagram, Node, Edge, StyleMap, Position } from "../dsl/types.js";
 import type { Stylesheet, ResolvedProperties } from "../stylesheet/types.js";
-import { mergeTheme, resolveVars, resolveClass } from "../stylesheet/resolver.js";
-import { getShapeStyle, getDefaultSize } from "./shape-map.js";
+import { mergeTheme, resolveVars } from "../stylesheet/resolver.js";
 import {
-  ARROW_TO_STYLE, ARROW_MULTIPLIER, IMP_STROKE_WIDTH, IMP_DASHED,
-  TERMINAL_OVERRIDE, ROUTE_TO_STYLE,
+  ARROW_TO_STYLE, ARROW_MULTIPLIER, IMP_STROKE_WIDTH,
+  TERMINAL_OVERRIDE,
 } from "./arrow-map.js";
 
 // ---------------------------------------------------------------------------
@@ -29,70 +27,87 @@ function escapeXml(str: string): string {
     .replace(/'/g, "&apos;");
 }
 
-/** Strip quotes from font family — mxGraph uses unquoted font names in style attributes. */
-function sanitizeFontFamily(ff: string): string {
-  return ff.replace(/"/g, "").replace(/'/g, "");
-}
-
 /** Convert \n in labels to HTML line breaks for mxGraph. */
 function labelToHtml(label: string): string {
   return escapeXml(label).replace(/\\n/g, "&lt;br&gt;");
 }
 
-function colorProps(
-  token: ColorToken | undefined,
-  themeProps: ResolvedProperties,
-  defaults: { fill: string; stroke: string; font: string },
-): { fillColor: string; strokeColor: string; fontColor: string } {
-  if (token) {
-    return {
-      fillColor: themeProps[`--${token}-fill`] ?? defaults.fill,
-      strokeColor: themeProps[`--${token}-stroke`] ?? defaults.stroke,
-      fontColor: themeProps[`--${token}-font`] ?? defaults.font,
-    };
+// ---------------------------------------------------------------------------
+// Theme variable resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve a theme variable reference against the stylesheet.
+ *
+ * Examples:
+ *   "$c0.fill"    → themeProps["--c0-fill"]  → "#EFF6FF"
+ *   "$c0.stroke"  → themeProps["--c0-stroke"] → "#3b82f6"
+ *   "$default.fill" → themeProps["--default-fill"] → "#ffffff"
+ *   "$font"       → themeProps["--font-default"]
+ *   "$font.mono"  → themeProps["--font-mono"]
+ *   "$font.notes" → themeProps["--font-notes"]
+ */
+function resolveThemeVar(ref: string, themeProps: ResolvedProperties): string | undefined {
+  if (!ref.startsWith("$")) return undefined;
+
+  const body = ref.slice(1); // remove "$"
+
+  // Font variables
+  if (body === "font") return themeProps["--font-default"];
+  if (body === "font.mono") return themeProps["--font-mono"];
+  if (body === "font.notes") return themeProps["--font-notes"];
+
+  // Color variables: "$c0.fill" → "--c0-fill"
+  const dotIdx = body.indexOf(".");
+  if (dotIdx > 0) {
+    const token = body.slice(0, dotIdx);
+    const channel = body.slice(dotIdx + 1);
+    const cssVar = `--${token}-${channel}`;
+    return themeProps[cssVar];
   }
-  return {
-    fillColor: defaults.fill,
-    strokeColor: defaults.stroke,
-    fontColor: defaults.font,
-  };
+
+  return undefined;
 }
 
-function textStyleProps(
-  textClass: TextClass | undefined,
-  defaultClass: string,
-  stylesheet: Stylesheet,
-  themeProps: ResolvedProperties,
-): { fontSize: number; fontStyle: number; fontFamily?: string } {
-  const sizeName = textClass?.size ?? defaultClass;
-  const classDef = resolveClass(stylesheet, sizeName, themeProps);
-  const mono = textClass?.mono;
-
-  let fontSize = 12;
-  if (classDef["font-size"]) {
-    fontSize = parseInt(classDef["font-size"], 10) || 12;
+/**
+ * Resolve all theme variables in a StyleMap, producing a clean style map
+ * with only literal values suitable for mxGraph XML.
+ */
+function resolveStyleMap(style: StyleMap, themeProps: ResolvedProperties): StyleMap {
+  const resolved: StyleMap = {};
+  for (const [key, value] of Object.entries(style)) {
+    if (value.startsWith("$")) {
+      const resolvedVal = resolveThemeVar(value, themeProps);
+      if (resolvedVal !== undefined) {
+        // Strip quotes from font family for mxGraph style attributes
+        resolved[key] = resolvedVal.replace(/"/g, "").replace(/'/g, "");
+      } else {
+        resolved[key] = value; // leave unresolved (will appear as-is)
+      }
+    } else {
+      resolved[key] = value;
+    }
   }
+  return resolved;
+}
 
-  let fontStyle = 0; // 0=normal, 1=bold, 2=italic, 3=bold+italic
-  if (classDef["font-weight"] === "bold") fontStyle |= 1;
-  if (classDef["font-style"] === "italic" || textClass?.italic) fontStyle |= 2;
-
-  let fontFamily: string | undefined;
-  if (mono) {
-    const monoDef = resolveClass(stylesheet, "mono", themeProps);
-    fontFamily = monoDef["font-family"] ?? themeProps["--font-mono"];
+/**
+ * Serialize a resolved StyleMap to a draw.io style string.
+ */
+function styleMapToString(map: StyleMap): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(map)) {
+    if (value === "") {
+      parts.push(key);
+    } else {
+      parts.push(`${key}=${value}`);
+    }
   }
-
-  // Strip quotes from font family — mxGraph style attributes use unquoted font names
-  if (fontFamily) {
-    fontFamily = fontFamily.replace(/"/g, "").replace(/'/g, "");
-  }
-
-  return { fontSize, fontStyle, fontFamily };
+  return parts.join(";") + (parts.length > 0 ? ";" : "");
 }
 
 // ---------------------------------------------------------------------------
-// Cell builders
+// Cell ID management
 // ---------------------------------------------------------------------------
 
 let cellIdCounter = 2; // 0 and 1 are reserved
@@ -101,450 +116,173 @@ function nextId(): string {
   return String(cellIdCounter++);
 }
 
-function buildShapeCell(
-  shape: Shape,
-  stylesheet: Stylesheet,
-  themeProps: ResolvedProperties,
-  parentId: string,
-  groupInfo: Map<string, string>, // shape ID → mxCell ID
-): string {
-  const mxId = groupInfo.get(shape.id) ?? nextId();
-  if (!groupInfo.has(shape.id)) groupInfo.set(shape.id, mxId);
-
-  const isNote = shape.shapeType === "note";
-  const defaultColor = isNote ? "c2" : undefined;
-  const effectiveColor = shape.color ?? defaultColor as ColorToken | undefined;
-
-  const defaults = {
-    fill: themeProps["--default-fill"] ?? "#ffffff",
-    stroke: themeProps["--default-stroke"] ?? "#9ca3af",
-    font: themeProps["--default-font"] ?? "#1f2937",
-  };
-  const colors = colorProps(effectiveColor, themeProps, defaults);
-
-  // Text style
-  const defaultTextClass = "b3";
-  const textProps = textStyleProps(shape.textClass, defaultTextClass, stylesheet, themeProps);
-
-  // For notes, always use --font-notes
-  let fontFamily = textProps.fontFamily;
-  if (isNote) {
-    fontFamily = sanitizeFontFamily(
-      themeProps["--font-notes"]
-      ?? resolveClass(stylesheet, "note", themeProps)["font-family"]
-      ?? ""
-    ) || undefined;
-  }
-
-  // Build style string
-  let style = getShapeStyle(shape.shapeType);
-  style += `fillColor=${colors.fillColor};`;
-  style += `strokeColor=${colors.strokeColor};`;
-  style += `fontColor=${colors.fontColor};`;
-  style += `fontSize=${textProps.fontSize};`;
-  if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-  if (fontFamily) style += `fontFamily=${fontFamily};`;
-
-  // Check if this shape is a group (container)
-  const isContainer = [...groupInfo.entries()].some(
-    ([, parentMxId]) => parentMxId === mxId
-  );
-  // Actually, we need a different approach: check if any element has in=thisId
-  // This is handled externally — mark as container if child shapes exist
-
-  const size = shape.size ?? getDefaultSize(shape.shapeType);
-
-  // Compute position — if this shape has a parent, convert to relative coordinates
-  let x = shape.position.x;
-  let y = shape.position.y;
-  // Parent-relative conversion is handled in the main builder
-
-  const label = labelToHtml(shape.label);
-
-  return `    <mxCell id="${mxId}" value="${label}" style="${style}" vertex="1" parent="${parentId}">` +
-    `<mxGeometry x="${x}" y="${y}" width="${size.width}" height="${size.height}" as="geometry" />` +
-    `</mxCell>`;
-}
-
-function buildConnectionCell(
-  conn: Connection,
-  stylesheet: Stylesheet,
-  themeProps: ResolvedProperties,
-  idMap: Map<string, string>, // DSL ID → mxCell ID
-): string {
-  const mxId = nextId();
-  const sourceId = idMap.get(conn.source) ?? conn.source;
-  const targetId = idMap.get(conn.target) ?? conn.target;
-
-  // Arrow style
-  const arrowProps = ARROW_TO_STYLE[conn.arrow];
-  const imp: ImportanceLevel = conn.importance ?? 3;
-  const multiplier = ARROW_MULTIPLIER[conn.arrow];
-  const baseWidth = IMP_STROKE_WIDTH[imp];
-  const strokeWidth = multiplier * baseWidth;
-  const isDashed = arrowProps.dashed || IMP_DASHED[imp];
-
-  let style = "";
-
-  // Edge style / routing
-  const route = conn.route ?? "ortho";
-  const edgeStyle = ROUTE_TO_STYLE[route];
-  if (edgeStyle && edgeStyle !== "none") {
-    style += `edgeStyle=${edgeStyle};`;
-  }
-
-  // Arrow endpoints
-  let endArrow = arrowProps.endArrow;
-  let endFill = arrowProps.endFill;
-  if (conn.terminal) {
-    const override = TERMINAL_OVERRIDE[conn.terminal];
-    endArrow = override.endArrow;
-    endFill = override.endFill;
-  }
-
-  if (endArrow) style += `endArrow=${endArrow};`;
-  if (endFill !== undefined) style += `endFill=${endFill};`;
-  if (arrowProps.startArrow) style += `startArrow=${arrowProps.startArrow};`;
-  if (arrowProps.startFill !== undefined) style += `startFill=${arrowProps.startFill};`;
-
-  style += `strokeWidth=${strokeWidth};`;
-  if (isDashed) style += `dashed=1;`;
-
-  // Color
-  if (conn.color) {
-    const strokeColor = themeProps[`--${conn.color}-stroke`];
-    const fontColor = themeProps[`--${conn.color}-font`];
-    if (strokeColor) style += `strokeColor=${strokeColor};`;
-    if (fontColor) style += `fontColor=${fontColor};`;
-  }
-
-  // Text style
-  const textProps = textStyleProps(conn.textClass, "ct1", stylesheet, themeProps);
-  style += `fontSize=${textProps.fontSize};`;
-  if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-  if (textProps.fontFamily) style += `fontFamily=${textProps.fontFamily};`;
-
-  style += `html=1;`;
-
-  const label = conn.label ? labelToHtml(conn.label) : "";
-
-  // Waypoints
-  let geometryInner = "";
-  if (conn.waypoints && conn.waypoints.length > 0) {
-    const points = conn.waypoints
-      .map((wp) => `<mxPoint x="${wp.x}" y="${wp.y}" />`)
-      .join("");
-    geometryInner = `<Array as="points">${points}</Array>`;
-  }
-
-  return `    <mxCell id="${mxId}" value="${label}" style="${style}" edge="1" source="${sourceId}" target="${targetId}" parent="1">` +
-    `<mxGeometry${geometryInner ? "" : " relative=\"1\""} as="geometry">${geometryInner}</mxGeometry>` +
-    `</mxCell>`;
-}
-
-function buildTextCell(
-  text: TextElement,
-  stylesheet: Stylesheet,
-  themeProps: ResolvedProperties,
-): string {
-  const mxId = nextId();
-
-  const defaults = {
-    fill: themeProps["--default-fill"] ?? "#ffffff",
-    stroke: themeProps["--default-stroke"] ?? "#9ca3af",
-    font: themeProps["--default-font"] ?? "#1f2937",
-  };
-
-  let fontColor = defaults.font;
-  if (text.color) {
-    fontColor = themeProps[`--${text.color}-font`] ?? fontColor;
-  }
-
-  const textProps = textStyleProps(text.textClass, "b2", stylesheet, themeProps);
-
-  let style = "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;";
-  style += `strokeColor=none;fillColor=none;`;
-  style += `fontColor=${fontColor};`;
-  style += `fontSize=${textProps.fontSize};`;
-  if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-  if (textProps.fontFamily) style += `fontFamily=${textProps.fontFamily};`;
-
-  const label = labelToHtml(text.label);
-
-  // Use a reasonable default size for text elements
-  const width = 120;
-  const height = 30;
-
-  return `    <mxCell id="${mxId}" value="${label}" style="${style}" vertex="1" parent="1">` +
-    `<mxGeometry x="${text.position.x}" y="${text.position.y}" width="${width}" height="${height}" as="geometry" />` +
-    `</mxCell>`;
-}
-
 // ---------------------------------------------------------------------------
 // Main builder
 // ---------------------------------------------------------------------------
 
-/**
- * Build mxGraph XML from a Diagram AST and resolved stylesheet.
- */
 export function buildMxGraphXml(
   diagram: Diagram,
   stylesheet: Stylesheet,
   theme: "light" | "dark" = "light",
 ): string {
-  // Reset cell ID counter
   cellIdCounter = 2;
 
   const merged = mergeTheme(stylesheet, theme);
   const themeProps = resolveVars(merged);
 
-  // Pre-pass: assign mxCell IDs for all shapes/texts, identify groups
+  // Pre-pass: assign mxCell IDs for all nodes
   const idMap = new Map<string, string>(); // DSL ID → mxCell ID
-  const groupChildren = new Map<string, string[]>(); // group DSL ID → child DSL IDs
 
   for (const el of diagram.elements) {
-    if (el.kind === "shape") {
-      const mxId = nextId();
-      idMap.set(el.id, mxId);
-      if (el.group) {
-        const children = groupChildren.get(el.group) ?? [];
-        children.push(el.id);
-        groupChildren.set(el.group, children);
-      }
-    } else if (el.kind === "text") {
+    if (el.kind === "node") {
       const mxId = nextId();
       idMap.set(el.id, mxId);
     }
   }
-
-  // Mark containers
-  const containerIds = new Set(groupChildren.keys());
 
   const cellLines: string[] = [
     `    <mxCell id="0" />`,
     `    <mxCell id="1" parent="0" />`,
   ];
 
-  // Get absolute positions for all shapes (needed for group-relative conversion)
-  const shapePositions = new Map<string, Position>();
+  // Build absolute positions map for parent-relative conversion
+  const nodePositions = new Map<string, Position>();
   for (const el of diagram.elements) {
-    if (el.kind === "shape") {
-      shapePositions.set(el.id, el.position);
+    if (el.kind === "node") {
+      nodePositions.set(el.id, el.position);
     }
   }
 
-  // Counter continues from where pre-pass left off — connections get new IDs
-
   for (const el of diagram.elements) {
-    if (el.kind === "shape") {
+    if (el.kind === "node") {
       const mxId = idMap.get(el.id)!;
-      const parentMxId = el.group ? idMap.get(el.group) ?? "1" : "1";
-      const isContainer = containerIds.has(el.id);
+      const parentMxId = el.parent ? idMap.get(el.parent) ?? "1" : "1";
 
-      let style = getShapeStyle(el.shapeType);
-
-      // Container flag — from AST or inferred from children
-      if (isContainer || el.container) {
-        style += "container=1;";
-      }
-
-      // Note special behavior
-      const isNote = el.shapeType === "note";
-      const defaultColorToken = isNote ? "c2" : undefined;
-      const effectiveColor = el.color ?? defaultColorToken as ColorToken | undefined;
-
-      const defaults = {
-        fill: themeProps["--default-fill"] ?? "#ffffff",
-        stroke: themeProps["--default-stroke"] ?? "#9ca3af",
-        font: themeProps["--default-font"] ?? "#1f2937",
-      };
-      const colors = colorProps(effectiveColor, themeProps, defaults);
-
-      if (el.noFill) {
-        style += `fillColor=none;`;
-      } else {
-        style += `fillColor=${colors.fillColor};`;
-      }
-      style += `strokeColor=${colors.strokeColor};`;
-      style += `fontColor=${colors.fontColor};`;
-
-      // Text style
-      const textProps = textStyleProps(el.textClass, "b3", stylesheet, themeProps);
-      let fontFamily = textProps.fontFamily;
-      if (isNote) {
-        const rawFont = themeProps["--font-notes"]
-          ?? resolveClass(stylesheet, "note", themeProps)["font-family"]
-          ?? "";
-        fontFamily = sanitizeFontFamily(rawFont) || undefined;
-      }
-
-      style += `fontSize=${textProps.fontSize};`;
-      if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-      if (fontFamily) style += `fontFamily=${fontFamily};`;
-
-      // Stroke width
-      if (el.strokeWidth !== undefined && el.strokeWidth !== 1) {
-        style += `strokeWidth=${el.strokeWidth};`;
-      }
-
-      // Text alignment
-      if (el.align && el.align !== "center") {
-        style += `align=${el.align};`;
-      }
-      if (el.verticalAlign && el.verticalAlign !== "middle") {
-        style += `verticalAlign=${el.verticalAlign};`;
-      }
-
-      const size = el.size ?? getDefaultSize(el.shapeType);
+      // Resolve theme variables in style, ensuring essential draw.io properties
+      const resolvedStyle = resolveStyleMap(el.style, themeProps);
+      if (!resolvedStyle["whiteSpace"]) resolvedStyle["whiteSpace"] = "wrap";
+      if (!resolvedStyle["html"]) resolvedStyle["html"] = "1";
+      const styleStr = styleMapToString(resolvedStyle);
 
       // Coordinate transform: absolute → parent-relative
       let x = el.position.x;
       let y = el.position.y;
-      if (el.group) {
-        const parentPos = shapePositions.get(el.group);
+      if (el.parent) {
+        const parentPos = nodePositions.get(el.parent);
         if (parentPos) {
           x -= parentPos.x;
           y -= parentPos.y;
         }
       }
 
+      const size = el.size ?? { width: 120, height: 60 };
       const label = labelToHtml(el.label);
 
       cellLines.push(
-        `    <mxCell id="${mxId}" value="${label}" style="${style}" vertex="1" parent="${parentMxId}">` +
+        `    <mxCell id="${mxId}" value="${label}" style="${styleStr}" vertex="1" parent="${parentMxId}">` +
         `<mxGeometry x="${x}" y="${y}" width="${size.width}" height="${size.height}" as="geometry" />` +
         `</mxCell>`
       );
-    } else if (el.kind === "text") {
-      const mxId = idMap.get(el.id)!;
-      const defaults = {
-        fill: themeProps["--default-fill"] ?? "#ffffff",
-        stroke: themeProps["--default-stroke"] ?? "#9ca3af",
-        font: themeProps["--default-font"] ?? "#1f2937",
-      };
-
-      let fontColor = defaults.font;
-      if (el.color) {
-        fontColor = themeProps[`--${el.color}-font`] ?? fontColor;
-      }
-
-      const textProps = textStyleProps(el.textClass, "b2", stylesheet, themeProps);
-
-      let style = "text;html=1;align=center;verticalAlign=middle;whiteSpace=wrap;";
-      style += `strokeColor=none;fillColor=none;`;
-      style += `fontColor=${fontColor};`;
-      style += `fontSize=${textProps.fontSize};`;
-      if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-      if (textProps.fontFamily) style += `fontFamily=${textProps.fontFamily};`;
-
-      const label = labelToHtml(el.label);
-      const width = 120;
-      const height = 30;
-
-      cellLines.push(
-        `    <mxCell id="${mxId}" value="${label}" style="${style}" vertex="1" parent="1">` +
-        `<mxGeometry x="${el.position.x}" y="${el.position.y}" width="${width}" height="${height}" as="geometry" />` +
-        `</mxCell>`
-      );
-    } else if (el.kind === "connection") {
+    } else if (el.kind === "edge") {
       const connId = nextId();
-      const isFloatingSource = !el.source && !!el.sourcePoint;
-      const isFloatingTarget = !el.target && !!el.targetPoint;
-      const sourceId = isFloatingSource ? "" : (idMap.get(el.source) ?? el.source);
-      const targetId = isFloatingTarget ? "" : (idMap.get(el.target) ?? el.target);
+      const sourceId = el.source ? (idMap.get(el.source) ?? el.source) : "";
+      const targetId = el.target ? (idMap.get(el.target) ?? el.target) : "";
 
-      const arrowProps = ARROW_TO_STYLE[el.arrow];
-      const imp: ImportanceLevel = el.importance ?? 3;
-      const multiplier = ARROW_MULTIPLIER[el.arrow];
-      const baseWidth = IMP_STROKE_WIDTH[imp];
-      const strokeWidth = multiplier * baseWidth;
-      const isDashed = arrowProps.dashed || IMP_DASHED[imp];
+      // Determine edge parent
+      const edgeParentMxId = el.parent ? (idMap.get(el.parent) ?? "1") : "1";
 
-      let style = "";
-
-      // Routing — always emit edgeStyle for fidelity
-      const route = el.route ?? "ortho";
-      const edgeStyle = ROUTE_TO_STYLE[route];
-      style += `edgeStyle=${edgeStyle};`;
-      style += `rounded=1;`;
-
-      // Arrow endpoints
-      let endArrow = arrowProps.endArrow;
-      let endFill = arrowProps.endFill;
-      if (el.terminal) {
-        const override = TERMINAL_OVERRIDE[el.terminal];
-        endArrow = override.endArrow;
-        endFill = override.endFill;
+      // Compute parent offset for coordinate conversion (absolute → parent-relative)
+      let parentDx = 0, parentDy = 0;
+      if (el.parent) {
+        // Walk up the parent chain to compute absolute offset
+        let pid: string | undefined = el.parent;
+        while (pid) {
+          const pos = nodePositions.get(pid);
+          if (!pos) break;
+          parentDx += pos.x;
+          parentDy += pos.y;
+          // Find this node's parent
+          const parentNode = diagram.elements.find(
+            (e) => e.kind === "node" && e.id === pid
+          ) as import("../dsl/types.js").Node | undefined;
+          pid = parentNode?.parent;
+        }
       }
 
-      if (endArrow) style += `endArrow=${endArrow};`;
-      if (endFill !== undefined) style += `endFill=${endFill};`;
-      // Always emit startArrow for fidelity (explicit none when no start arrow)
-      style += `startArrow=${arrowProps.startArrow ?? "none"};`;
-      if (arrowProps.startFill !== undefined) style += `startFill=${arrowProps.startFill};`;
+      // Start with explicit style properties (v2: style map comes from the original)
+      const combinedStyle: StyleMap = {};
 
-      style += `strokeWidth=${strokeWidth};`;
-      if (isDashed) style += `dashed=1;`;
-
-      // Color — always emit strokeColor for edges
-      if (el.color) {
-        const strokeColor = themeProps[`--${el.color}-stroke`];
-        const fontColor = themeProps[`--${el.color}-font`];
-        if (strokeColor) style += `strokeColor=${strokeColor};`;
-        if (fontColor) style += `fontColor=${fontColor};`;
-      } else {
-        // Use default stroke for edges without a color token
-        const defaultStroke = themeProps["--default-stroke"] ?? "#9ca3af";
-        style += `strokeColor=${defaultStroke};`;
+      // Apply arrow operator defaults if present (for AI-generated DSL)
+      if (el.arrow) {
+        const arrowProps = ARROW_TO_STYLE[el.arrow];
+        if (arrowProps) {
+          if (arrowProps.endArrow) combinedStyle["endArrow"] = arrowProps.endArrow;
+          if (arrowProps.endFill !== undefined) combinedStyle["endFill"] = String(arrowProps.endFill);
+          if (arrowProps.startArrow) combinedStyle["startArrow"] = arrowProps.startArrow;
+          if (arrowProps.startFill !== undefined) combinedStyle["startFill"] = String(arrowProps.startFill);
+          if (arrowProps.dashed) combinedStyle["dashed"] = "1";
+          const multiplier = ARROW_MULTIPLIER[el.arrow];
+          const strokeWidth = multiplier * IMP_STROKE_WIDTH[3];
+          combinedStyle["strokeWidth"] = String(strokeWidth);
+        }
+        if (el.terminal) {
+          const override = TERMINAL_OVERRIDE[el.terminal];
+          combinedStyle["endArrow"] = override.endArrow;
+          combinedStyle["endFill"] = String(override.endFill);
+        }
       }
 
-      // Text style
-      const textProps = textStyleProps(el.textClass, "ct1", stylesheet, themeProps);
-      style += `fontSize=${textProps.fontSize};`;
-      if (textProps.fontStyle) style += `fontStyle=${textProps.fontStyle};`;
-      if (textProps.fontFamily) style += `fontFamily=${textProps.fontFamily};`;
-      // Anchor points
-      if (el.entryX !== undefined) style += `entryX=${el.entryX};`;
-      if (el.entryY !== undefined) style += `entryY=${el.entryY};`;
-      if (el.exitX !== undefined) style += `exitX=${el.exitX};`;
-      if (el.exitY !== undefined) style += `exitY=${el.exitY};`;
-      // draw.io also needs entryDx/Dy/exitDx/Dy when anchors are specified
-      if (el.entryX !== undefined || el.entryY !== undefined) {
-        style += `entryDx=0;entryDy=0;`;
+      // Only add defaults if not already provided by style
+      if (!combinedStyle["edgeStyle"] && !el.style["edgeStyle"]) {
+        combinedStyle["edgeStyle"] = "orthogonalEdgeStyle";
       }
-      if (el.exitX !== undefined || el.exitY !== undefined) {
-        style += `exitDx=0;exitDy=0;`;
+      if (!combinedStyle["rounded"] && !el.style["rounded"]) {
+        combinedStyle["rounded"] = "1";
+      }
+      combinedStyle["html"] = "1";
+
+      // Override with explicit style properties from DSL
+      for (const [key, value] of Object.entries(el.style)) {
+        if (key === "_geoWidth" || key === "_geoHeight") continue; // internal
+        combinedStyle[key] = value;
       }
 
-      style += `verticalAlign=middle;html=1;`;
+      // Resolve theme variables
+      const resolvedStyle = resolveStyleMap(combinedStyle, themeProps);
+      const styleStr = styleMapToString(resolvedStyle);
 
       const label = el.label ? labelToHtml(el.label) : "";
 
-      // Waypoints
+      // Geometry: preserve width/height for shape-based edges (flexArrow)
+      const geoW = el.style["_geoWidth"];
+      const geoH = el.style["_geoHeight"];
+      const geoSizeAttrs = (geoW && geoH) ? ` width="${geoW}" height="${geoH}"` : "";
+
+      // Waypoints (convert to parent-relative)
       let geometryInner = "";
       if (el.waypoints && el.waypoints.length > 0) {
         const points = el.waypoints
-          .map((wp) => `<mxPoint x="${wp.x}" y="${wp.y}" />`)
+          .map((wp) => `<mxPoint x="${wp.x - parentDx}" y="${wp.y - parentDy}" />`)
           .join("");
         geometryInner = `<Array as="points">${points}</Array>`;
       }
 
-      // Floating edge endpoints (Visio imports)
-      if (isFloatingSource && el.sourcePoint) {
-        geometryInner += `<mxPoint x="${el.sourcePoint.x}" y="${el.sourcePoint.y}" as="sourcePoint" />`;
+      // Source/target points (convert to parent-relative)
+      if (el.sourcePoint) {
+        geometryInner += `<mxPoint x="${el.sourcePoint.x - parentDx}" y="${el.sourcePoint.y - parentDy}" as="sourcePoint" />`;
       }
-      if (isFloatingTarget && el.targetPoint) {
-        geometryInner += `<mxPoint x="${el.targetPoint.x}" y="${el.targetPoint.y}" as="targetPoint" />`;
+      if (el.targetPoint) {
+        geometryInner += `<mxPoint x="${el.targetPoint.x - parentDx}" y="${el.targetPoint.y - parentDy}" as="targetPoint" />`;
       }
 
-      // Build source/target attributes — omit for floating endpoints
+      // Build source/target attributes
       let edgeAttrs = `edge="1"`;
-      if (!isFloatingSource) edgeAttrs += ` source="${sourceId}"`;
-      if (!isFloatingTarget) edgeAttrs += ` target="${targetId}"`;
+      if (sourceId) edgeAttrs += ` source="${sourceId}"`;
+      if (targetId) edgeAttrs += ` target="${targetId}"`;
 
       cellLines.push(
-        `    <mxCell id="${connId}" value="${label}" style="${style}" ${edgeAttrs} parent="1">` +
-        `<mxGeometry relative="1" as="geometry">${geometryInner}</mxGeometry>` +
+        `    <mxCell id="${connId}" value="${label}" style="${styleStr}" ${edgeAttrs} parent="${edgeParentMxId}">` +
+        `<mxGeometry${geoSizeAttrs} relative="1" as="geometry">${geometryInner}</mxGeometry>` +
         `</mxCell>`
       );
     }

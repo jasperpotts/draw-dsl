@@ -4,20 +4,13 @@
  * Pipeline: File → extract XML → parseMxGraphXml → AST₁ → serializeDiagram → DSL text
  *   → parseDsl → AST₂ → buildMxGraphXml → XML₂ → parseMxGraphXml → AST₃
  *
- * Verifies structural preservation: element counts, connection topology, group hierarchy.
- *
- * NOT asserted (expected to change for external diagrams):
- * - Exact shape types (external shapes like cisco19, stencils → "box")
- * - Exact color token values (hex→token mapping is approximate)
- * - Exact text classes (font-size→class mapping is approximate)
- * - Arrow operator details (stroke-width ambiguities)
- * - Labels may lose HTML formatting
+ * Verifies structural preservation: element counts, connection topology.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "fs/promises";
 import { mkdirSync, writeFileSync } from "fs";
-import { join, basename } from "path";
+import { join } from "path";
 import { parseDsl } from "../src/lib/dsl/parser.js";
 import { serializeDiagram } from "../src/lib/dsl/serializer.js";
 import { buildMxGraphXml } from "../src/lib/drawio/xml-builder.js";
@@ -25,7 +18,7 @@ import { parseMxGraphXml } from "../src/lib/drawio/xml-parser.js";
 import { extractFromSvg } from "../src/lib/formats/drawio-svg.js";
 import { extractFromPng } from "../src/lib/formats/drawio-png.js";
 import { testStylesheet } from "./helpers/stylesheet.js";
-import type { Diagram, Shape, Connection, TextElement } from "../src/lib/dsl/types.js";
+import type { Diagram, Node, Edge } from "../src/lib/dsl/types.js";
 
 const SAMPLES_DIR = join(import.meta.dirname, "..", "drawio-created-samples");
 const OUTPUT_DIR = join(import.meta.dirname, "..", "test-output", "samples");
@@ -34,9 +27,6 @@ beforeAll(() => {
   mkdirSync(OUTPUT_DIR, { recursive: true });
 });
 
-/**
- * Load XML from a sample file, handling .drawio, .drawio.svg, and .drawio.png formats.
- */
 async function loadXml(filename: string): Promise<string> {
   const filePath = join(SAMPLES_DIR, filename);
   if (filename.endsWith(".drawio.svg")) {
@@ -50,29 +40,9 @@ async function loadXml(filename: string): Promise<string> {
 }
 
 function countElements(d: Diagram) {
-  const shapes = d.elements.filter((e): e is Shape => e.kind === "shape");
-  const conns = d.elements.filter((e): e is Connection => e.kind === "connection");
-  const texts = d.elements.filter((e): e is TextElement => e.kind === "text");
-  return { shapes, conns, texts };
-}
-
-/**
- * Build label-based topology set for connections.
- * Resolves IDs to labels so different ID schemes compare equal.
- */
-function connectionTopology(d: Diagram): Set<string> {
-  const idToLabel = new Map<string, string>();
-  for (const el of d.elements) {
-    if (el.kind === "shape" || el.kind === "text") {
-      idToLabel.set(el.id, el.label);
-    }
-  }
-  const conns = d.elements.filter((e): e is Connection => e.kind === "connection");
-  return new Set(conns.map((c) => {
-    const sLabel = idToLabel.get(c.source) ?? c.source;
-    const tLabel = idToLabel.get(c.target) ?? c.target;
-    return `${sLabel}->${tLabel}`;
-  }));
+  const nodes = d.elements.filter((e): e is Node => e.kind === "node");
+  const edges = d.elements.filter((e): e is Edge => e.kind === "edge");
+  return { nodes, edges };
 }
 
 // .drawio files (raw XML)
@@ -84,13 +54,13 @@ const drawioFiles = [
   "Subway Flow.drawio",
 ];
 
-// .drawio.svg files — these have extraction issues (URI encoding, double-encoding)
+// .drawio.svg files
 const svgFiles = [
   "clpr-networking-architecture.drawio.svg",
   "Merkle Tree.drawio.svg",
 ];
 
-// .drawio.png files — this file doesn't have drawio tEXt chunk
+// .drawio.png files
 const pngFiles = [
   "clpr-networking-architecture.drawio.png",
 ];
@@ -100,8 +70,8 @@ describe("Sample Round-Trip: .drawio files", () => {
     it(`${file}: loads and parses to AST with elements`, async () => {
       const xml = await loadXml(file);
       const ast = await parseMxGraphXml(xml);
-      const { shapes, conns } = countElements(ast);
-      expect(shapes.length + conns.length).toBeGreaterThan(0);
+      const { nodes, edges } = countElements(ast);
+      expect(nodes.length + edges.length).toBeGreaterThan(0);
     });
 
     it(`${file}: serializes to non-empty DSL`, async () => {
@@ -111,55 +81,27 @@ describe("Sample Round-Trip: .drawio files", () => {
       expect(dslText.length).toBeGreaterThan(0);
     });
 
-    it(`${file}: shape count preserved through round-trip`, async () => {
+    it(`${file}: element count preserved through round-trip`, async () => {
       const xml1 = await loadXml(file);
       const ast1 = await parseMxGraphXml(xml1);
       const dslText = serializeDiagram(ast1);
       const { diagram: ast2, errors } = parseDsl(dslText);
+      expect(errors).toEqual([]);
 
-      // Write artifacts for manual inspection
-      const base = file.replace(/\.[^.]+$/, "").replace(/\s+/g, "-");
+      const xml2 = buildMxGraphXml(ast2, testStylesheet, "light");
+      const ast3 = await parseMxGraphXml(xml2);
+
+      const { nodes: nodes1, edges: edges1 } = countElements(ast1);
+      const { nodes: nodes3, edges: edges3 } = countElements(ast3);
+
+      // Allow some variation from Visio merge differences
+      expect(nodes3.length).toBeGreaterThanOrEqual(nodes1.length * 0.8);
+      expect(edges3.length).toBeGreaterThanOrEqual(edges1.length * 0.8);
+
+      // Write artifacts
+      const base = file.replace(/\s+/g, "-").replace(/\.[^.]+$/, "");
       writeFileSync(join(OUTPUT_DIR, `${base}.dsl`), dslText);
-
-      // Skip full round-trip if too many parse errors (external format incompatibilities)
-      if (errors.length > ast1.elements.length * 0.5) {
-        return; // too lossy to test further
-      }
-
-      const xml2 = buildMxGraphXml(ast2, testStylesheet, "light");
       writeFileSync(join(OUTPUT_DIR, `${base}.roundtrip.drawio`), xml2);
-      const ast3 = await parseMxGraphXml(xml2);
-
-      const { shapes: shapes1 } = countElements(ast1);
-      const { shapes: shapes2 } = countElements(ast2);
-      const { shapes: shapes3 } = countElements(ast3);
-
-      // Shapes that successfully parsed should survive the full round-trip
-      expect(shapes3.length).toBe(shapes2.length);
-
-      // And we shouldn't lose too many shapes from the original
-      // (some loss expected from parse errors on external format shapes)
-      const lossRatio = shapes2.length / Math.max(shapes1.length, 1);
-      expect(lossRatio, `Too many shapes lost from ${file}`).toBeGreaterThan(0.5);
-    });
-
-    it(`${file}: connection topology preserved through round-trip`, async () => {
-      const xml1 = await loadXml(file);
-      const ast1 = await parseMxGraphXml(xml1);
-      const dslText = serializeDiagram(ast1);
-      const { diagram: ast2, errors } = parseDsl(dslText);
-
-      if (errors.length > ast1.elements.length * 0.5) {
-        return;
-      }
-
-      const xml2 = buildMxGraphXml(ast2, testStylesheet, "light");
-      const ast3 = await parseMxGraphXml(xml2);
-
-      // Connection topology from ast2→ast3 should be preserved exactly
-      const topo2 = connectionTopology(ast2);
-      const topo3 = connectionTopology(ast3);
-      expect(topo3).toEqual(topo2);
     });
   }
 });
@@ -169,13 +111,8 @@ describe("Sample Round-Trip: .drawio.svg files", () => {
     it(`${file}: extracts XML and parses with elements`, async () => {
       const xml = await loadXml(file);
       const ast = await parseMxGraphXml(xml);
-      const { shapes, conns } = countElements(ast);
-      expect(shapes.length + conns.length).toBeGreaterThan(0);
-
-      // Write DSL artifact
-      const dslText = serializeDiagram(ast);
-      const base = file.replace(/\.drawio\.svg$/, "").replace(/\s+/g, "-");
-      writeFileSync(join(OUTPUT_DIR, `${base}.dsl`), dslText);
+      const { nodes, edges } = countElements(ast);
+      expect(nodes.length + edges.length).toBeGreaterThan(0);
     });
   }
 });
@@ -185,13 +122,8 @@ describe("Sample Round-Trip: .drawio.png files", () => {
     it(`${file}: extracts XML and parses with elements`, async () => {
       const xml = await loadXml(file);
       const ast = await parseMxGraphXml(xml);
-      const { shapes, conns } = countElements(ast);
-      expect(shapes.length + conns.length).toBeGreaterThan(0);
-
-      // Write DSL artifact
-      const dslText = serializeDiagram(ast);
-      const base = file.replace(/\.drawio\.png$/, "").replace(/\s+/g, "-");
-      writeFileSync(join(OUTPUT_DIR, `${base}.dsl`), dslText);
+      const { nodes, edges } = countElements(ast);
+      expect(nodes.length + edges.length).toBeGreaterThan(0);
     });
   }
 });

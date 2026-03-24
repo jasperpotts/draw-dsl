@@ -6,18 +6,17 @@
 
 // DSL types and operations
 export type {
-  ShapeKeyword, ArrowOperator, TerminalMarker, ColorToken,
-  TextSizeClass, TextClass, RouteType, ImportanceLevel,
-  Position, Size, Shape, Connection, TextElement,
+  ArrowOperator, TerminalMarker,
+  Position, Size, StyleMap, Node, Edge,
   DiagramElement, Diagram, ParseError, ValidationError,
   ParseResult,
 } from "./lib/dsl/index.js";
-export { parseDsl, serializeDiagram } from "./lib/dsl/index.js";
+export { isThemeVar, parseDsl, serializeDiagram } from "./lib/dsl/index.js";
 
 // draw.io XML operations
 export { buildMxGraphXml } from "./lib/drawio/xml-builder.js";
 export { parseMxGraphXml } from "./lib/drawio/xml-parser.js";
-export { getShapeStyle, isKnownShape, styleToShape } from "./lib/drawio/shape-map.js";
+export { parseStyleString, serializeStyleString } from "./lib/drawio/xml-parser.js";
 
 // Format extraction/embedding
 export { extractFromSvg, embedIntoSvg } from "./lib/formats/drawio-svg.js";

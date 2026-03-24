@@ -1,25 +1,60 @@
 /**
- * XML Parser: mxGraph XML → AST
+ * XML Parser v2: mxGraph XML → AST
  *
- * Best-effort reverse mapping from draw.io XML back to the DSL AST.
- * Replaces the old generator.ts.
+ * Parses draw.io XML into the v2 AST by preserving the full style string
+ * as a StyleMap. Optionally "theme-ifies" colors that closely match palette tokens.
  */
 
 import { parseStringPromise } from "xml2js";
-import type {
-  Diagram, DiagramElement, Shape, Connection, TextElement,
-  ColorToken, TextClass, TextSizeClass, ImportanceLevel, RouteType,
-  Position, HAlign, VAlign,
-} from "../dsl/types.js";
-import { styleToShape } from "./shape-map.js";
-import { styleToArrow, styleToRoute, strokeToImportance, ARROW_MULTIPLIER } from "./arrow-map.js";
+import type { Diagram, DiagramElement, Node, Edge, StyleMap, Position } from "../dsl/types.js";
 
 // ---------------------------------------------------------------------------
-// Color matching
+// Style string parsing
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a draw.io style string into a StyleMap.
+ * Handles both key=value pairs and value-less flags (e.g., "rounded", "ellipse").
+ */
+export function parseStyleString(style: string): StyleMap {
+  const map: StyleMap = {};
+  if (!style) return map;
+  const parts = style.split(";").filter((p) => p.trim() !== "");
+  for (const part of parts) {
+    const eqIdx = part.indexOf("=");
+    if (eqIdx === -1) {
+      // Value-less flag (e.g., "rounded", "ellipse", "text", "swimlane")
+      map[part.trim()] = "";
+    } else {
+      const key = part.slice(0, eqIdx).trim();
+      const value = part.slice(eqIdx + 1).trim();
+      if (key) map[key] = value;
+    }
+  }
+  return map;
+}
+
+/**
+ * Serialize a StyleMap back to a draw.io style string.
+ */
+export function serializeStyleString(map: StyleMap): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(map)) {
+    if (value === "") {
+      parts.push(key);
+    } else {
+      parts.push(`${key}=${value}`);
+    }
+  }
+  return parts.join(";") + (parts.length > 0 ? ";" : "");
+}
+
+// ---------------------------------------------------------------------------
+// Color matching for theme-ification
 // ---------------------------------------------------------------------------
 
 /** Light theme palette for reverse mapping. */
-const LIGHT_PALETTE: Record<ColorToken, { fill: string; stroke: string; font: string }> = {
+const LIGHT_PALETTE: Record<string, { fill: string; stroke: string; font: string }> = {
   c0: { fill: "#EFF6FF", stroke: "#3b82f6", font: "#1e40af" },
   c1: { fill: "#ECFDF5", stroke: "#10b981", font: "#065f46" },
   c2: { fill: "#FEF3C7", stroke: "#f59e0b", font: "#92400e" },
@@ -32,18 +67,7 @@ const LIGHT_PALETTE: Record<ColorToken, { fill: string; stroke: string; font: st
   c9: { fill: "#F0FDFA", stroke: "#14b8a6", font: "#115e59" },
 };
 
-const DARK_PALETTE: Record<ColorToken, { fill: string; stroke: string; font: string }> = {
-  c0: { fill: "#1e3a5f", stroke: "#60a5fa", font: "#bfdbfe" },
-  c1: { fill: "#1a3a2a", stroke: "#34d399", font: "#a7f3d0" },
-  c2: { fill: "#3d2e0a", stroke: "#fbbf24", font: "#fde68a" },
-  c3: { fill: "#3b1c1c", stroke: "#f87171", font: "#fecaca" },
-  c4: { fill: "#2e1a47", stroke: "#c084fc", font: "#e9d5ff" },
-  c5: { fill: "#1e1b4b", stroke: "#818cf8", font: "#c7d2fe" },
-  c6: { fill: "#3b1a2e", stroke: "#f472b6", font: "#fbcfe8" },
-  c7: { fill: "#1e293b", stroke: "#64748b", font: "#cbd5e1" },
-  c8: { fill: "#3b1f0a", stroke: "#fb923c", font: "#fed7aa" },
-  c9: { fill: "#0f2a2a", stroke: "#2dd4bf", font: "#99f6e4" },
-};
+const DEFAULT_COLORS = { fill: "#ffffff", stroke: "#9ca3af", font: "#1f2937" };
 
 function hexToRgb(hex: string): [number, number, number] | null {
   const clean = hex.replace(/^#/, "");
@@ -56,216 +80,133 @@ function hexToRgb(hex: string): [number, number, number] | null {
 }
 
 function colorDistance(a: [number, number, number], b: [number, number, number]): number {
-  return Math.sqrt(
-    (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2
-  );
+  return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 + (a[2] - b[2]) ** 2);
 }
 
 /**
- * Check if a color is near-white (all RGB channels > 240).
+ * Try to match a hex color to a theme token channel.
+ * Returns e.g. "$c0.fill" or undefined if no close match.
  */
-function isNearWhite(hex: string): boolean {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return false;
-  return rgb[0] > 240 && rgb[1] > 240 && rgb[2] > 240;
-}
-
-/**
- * Find the nearest color token for a hex color.
- * Only checks the light palette — matching against dark palette causes
- * false positives (e.g., black matching dark-theme fills).
- */
-function nearestColorToken(hex: string, channel?: "fill" | "stroke"): ColorToken | undefined {
+function matchColorToTheme(
+  hex: string,
+  channel: "fill" | "stroke" | "font",
+): string | undefined {
   const rgb = hexToRgb(hex);
   if (!rgb) return undefined;
 
-  let bestToken: ColorToken | undefined;
+  let bestToken: string | undefined;
   let bestDist = Infinity;
 
-  for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
-    // If a specific channel is requested, only check that channel
-    const candidates = channel
-      ? [channel === "fill" ? colors.fill : colors.stroke]
-      : [colors.fill, colors.stroke, colors.font];
-    for (const colorHex of candidates) {
-      const cRgb = hexToRgb(colorHex);
-      if (!cRgb) continue;
-      const dist = colorDistance(rgb, cRgb);
-      if (dist < bestDist) {
-        bestDist = dist;
-        bestToken = token as ColorToken;
-      }
+  // Check default colors first
+  const defaultHex = DEFAULT_COLORS[channel];
+  const defaultRgb = hexToRgb(defaultHex);
+  if (defaultRgb) {
+    const dist = colorDistance(rgb, defaultRgb);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestToken = `$default.${channel}`;
     }
   }
 
-  // Only match if reasonably close
-  if (bestDist > 80) return undefined;
+  // Check palette
+  for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
+    const tokenHex = colors[channel];
+    const tokenRgb = hexToRgb(tokenHex);
+    if (!tokenRgb) continue;
+    const dist = colorDistance(rgb, tokenRgb);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestToken = `$${token}.${channel}`;
+    }
+  }
+
+  // Only match if very close (within threshold)
+  if (bestDist > 30) return undefined;
   return bestToken;
-}
-
-// ---------------------------------------------------------------------------
-// HSL helpers for hue-based matching
-// ---------------------------------------------------------------------------
-
-function rgbToHsl(r: number, g: number, b: number): { h: number; s: number; l: number } {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const l = (max + min) / 2;
-  if (max === min) return { h: 0, s: 0, l };
-  const d = max - min;
-  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-  let h = 0;
-  if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
-  else if (max === g) h = ((b - r) / d + 2) / 6;
-  else h = ((r - g) / d + 4) / 6;
-  return { h: h * 360, s, l };
-}
-
-/** Angular distance between two hues (0–180). */
-function hueDist(h1: number, h2: number): number {
-  const d = Math.abs(h1 - h2);
-  return d > 180 ? 360 - d : d;
 }
 
 /**
- * Find the best color token considering both fill and stroke colors together.
- * Uses hue-based matching for saturated fills, RGB distance for desaturated ones.
+ * Theme-ify a StyleMap: replace literal colors with theme variable references
+ * where the color closely matches a palette token.
  */
-function bestColorTokenForShape(
-  fillHex: string | undefined,
-  strokeHex: string | undefined,
-): ColorToken | undefined {
-  const fillRgb = fillHex ? hexToRgb(fillHex) : null;
-  const strokeRgb = strokeHex ? hexToRgb(strokeHex) : null;
+function themeifyStyle(style: StyleMap): void {
+  const colorKeys: Array<{ styleKey: string; channel: "fill" | "stroke" | "font" }> = [
+    { styleKey: "fillColor", channel: "fill" },
+    { styleKey: "strokeColor", channel: "stroke" },
+    { styleKey: "fontColor", channel: "font" },
+  ];
 
-  if (!fillRgb && !strokeRgb) return undefined;
-
-  // Check if fill is saturated (not gray/white/black)
-  const fillHsl = fillRgb ? rgbToHsl(fillRgb[0], fillRgb[1], fillRgb[2]) : null;
-  const fillIsSaturated = fillHsl ? fillHsl.s > 0.15 : false;
-
-  // Very dark + desaturated fills (dark gray/black) should use defaults, not a color token
-  // These don't visually match any pastel palette color
-  if (fillHsl && fillHsl.l < 0.25 && fillHsl.s < 0.2) {
-    return undefined;
-  }
-
-  // For saturated fills, use hue-based matching against palette fill AND stroke colors
-  // (palette fills are pastels, strokes are brighter — both carry the token's hue)
-  if (fillIsSaturated && fillHsl && fillRgb) {
-    let bestToken: ColorToken | undefined;
-    let bestHueDist = Infinity;
-
-    for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
-      // Check hue distance against both fill and stroke, take the minimum
-      let minHd = Infinity;
-      for (const colorHex of [colors.fill, colors.stroke]) {
-        const cRgb = hexToRgb(colorHex);
-        if (!cRgb) continue;
-        const cHsl = rgbToHsl(cRgb[0], cRgb[1], cRgb[2]);
-        // Skip desaturated palette colors
-        if (cHsl.s < 0.2) continue;
-        const hd = hueDist(fillHsl.h, cHsl.h);
-        if (hd < minHd) minHd = hd;
-      }
-      if (minHd < bestHueDist) {
-        bestHueDist = minHd;
-        bestToken = token as ColorToken;
-      }
-    }
-
-    // Only use hue match if within 45 degrees
-    if (bestHueDist <= 45 && bestToken) return bestToken;
-  }
-
-  // For desaturated fills (white, gray, etc.), use RGB distance with defaults comparison
-  const defaultFillRgb = hexToRgb("#ffffff")!;
-  const defaultStrokeRgb = hexToRgb("#9ca3af")!;
-
-  let bestToken: ColorToken | undefined;
-  let bestScore = Infinity;
-
-  // Score using defaults (no token)
-  let defaultScore = 0;
-  if (fillRgb) defaultScore += colorDistance(fillRgb, defaultFillRgb);
-  if (strokeRgb) defaultScore += colorDistance(strokeRgb, defaultStrokeRgb);
-  bestScore = defaultScore;
-
-  for (const [token, colors] of Object.entries(LIGHT_PALETTE)) {
-    let score = 0;
-    if (fillRgb) {
-      const tokenFillRgb = hexToRgb(colors.fill);
-      if (tokenFillRgb) score += colorDistance(fillRgb, tokenFillRgb);
-    }
-    if (strokeRgb) {
-      const tokenStrokeRgb = hexToRgb(colors.stroke);
-      if (tokenStrokeRgb) score += colorDistance(strokeRgb, tokenStrokeRgb);
-    }
-    if (score < bestScore) {
-      bestScore = score;
-      bestToken = token as ColorToken;
+  for (const { styleKey, channel } of colorKeys) {
+    const value = style[styleKey];
+    if (!value || value === "none" || value.startsWith("$")) continue;
+    const themeVar = matchColorToTheme(value, channel);
+    if (themeVar) {
+      style[styleKey] = themeVar;
     }
   }
-
-  return bestToken;
 }
 
 // ---------------------------------------------------------------------------
-// Font size → text class matching
+// Style cleaning: remove Visio-specific noise
 // ---------------------------------------------------------------------------
 
-const FONT_SIZE_TO_CLASS: Array<{ size: number; cls: TextSizeClass }> = [
-  { size: 24, cls: "h1" },
-  { size: 20, cls: "h2" },
-  { size: 16, cls: "h3" },
-  { size: 14, cls: "h4" },
-  { size: 16, cls: "b1" },
-  { size: 14, cls: "b2" },
-  { size: 12, cls: "b3" },
-  { size: 10, cls: "b4" },
-  { size: 9, cls: "b5" },
-  { size: 8, cls: "b6" },
-  { size: 10, cls: "ct1" },
-  { size: 9, cls: "ct2" },
-];
+/** Properties that are Visio import artifacts and not needed for rendering. */
+const VISIO_NOISE_KEYS = new Set([
+  "vsdxID", "gradientColor", "spacingTop", "spacingBottom",
+  "spacingLeft", "spacingRight", "labelBackgroundColor", "points",
+  "overflow", "backgroundOutline",
+]);
 
-function nearestTextClass(fontSize: number, isConnection: boolean, isBold?: boolean): TextSizeClass {
-  // For connections, prefer ct classes
-  if (isConnection) {
-    if (fontSize <= 9) return "ct2";
-    if (fontSize <= 10) return "ct1";
+function cleanVisioNoise(style: StyleMap): void {
+  for (const key of VISIO_NOISE_KEYS) {
+    delete style[key];
   }
-
-  // Disambiguate h3/b1 (both 16px) and h4/b2 (both 14px) using bold flag
-  if (!isConnection && isBold !== undefined) {
-    if (fontSize === 16) return isBold ? "h3" : "b1";
-    if (fontSize === 14) return isBold ? "h4" : "b2";
-  }
-
-  let best: TextSizeClass = "b3";
-  let bestDist = Infinity;
-  for (const { size, cls } of FONT_SIZE_TO_CLASS) {
-    // Skip connection classes for shapes and vice versa
-    if (isConnection && !cls.startsWith("ct") && cls !== "b4" && cls !== "b5" && cls !== "b6") continue;
-    if (!isConnection && cls.startsWith("ct")) continue;
-
-    const dist = Math.abs(fontSize - size);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = cls;
-    }
-  }
-  return best;
 }
 
 // ---------------------------------------------------------------------------
-// Style string parsing
+// Label extraction
 // ---------------------------------------------------------------------------
 
-function getStyleProp(style: string, key: string): string | undefined {
-  const m = style.match(new RegExp(`(?:^|;)${key}=([^;]+)`));
-  return m?.[1];
+/** Formatting tags that should be preserved in labels. */
+const FORMATTING_TAG_RE = /<\/?(b|i|u|em|strong|font|sub|sup|s|strike)\b[^>]*>/i;
+
+/**
+ * Extract a label from draw.io's HTML value attribute.
+ * - If the label contains formatting tags (<b>, <font>, etc.), preserve them as raw HTML.
+ * - Otherwise, convert structural tags (<div>, <p>, <br>) to \n and strip the rest.
+ */
+function extractLabel(rawValue: string): string {
+  if (!rawValue) return "";
+
+  // Decode HTML entities that draw.io uses in attributes
+  let value = rawValue
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+
+  // Check if there are meaningful formatting tags
+  const hasFormatting = FORMATTING_TAG_RE.test(value);
+
+  if (hasFormatting) {
+    // Preserve formatting tags, but clean up structural wrappers
+    // Remove outer <div>/<p> wrappers that just add structure, keep inner formatting
+    value = value
+      .replace(/<br\s*\/?>/gi, "\\n")
+      .replace(/<\/?(div|p)\b[^>]*>/gi, "\\n")
+      .replace(/(\\n)+/g, "\\n")
+      .replace(/^\\n|\\n$/g, "");
+    return value;
+  }
+
+  // No formatting: strip all HTML to plain text
+  return value
+    .replace(/<br\s*\/?>/gi, "\\n")
+    .replace(/<\/?(div|p)\b[^>]*>/gi, "\\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/(\\n)+/g, "\\n")
+    .replace(/^\\n|\\n$/g, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -273,42 +214,22 @@ function getStyleProp(style: string, key: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | null {
+function parseCell(cell: any): DiagramElement | null {
   const attrs = cell.$ ?? {};
-  const style: string = attrs.style ?? "";
+  const styleStr: string = attrs.style ?? "";
   const id: string = attrs.id;
-  const label: string = (attrs.value ?? "").replace(/<br\s*\/?>/g, "\\n").replace(/<[^>]+>/g, "");
+  const label: string = extractLabel(attrs.value ?? "");
   const source: string | undefined = attrs.source;
   const target: string | undefined = attrs.target;
-  const parent: string | undefined = attrs.parent;
+  const parentId: string | undefined = attrs.parent;
 
   // Skip root cells
   if (id === "0" || id === "1") return null;
 
+  const style = parseStyleString(styleStr);
+
   // Edge
   if (attrs.edge === "1" || source || target) {
-    const strokeWidth = Number(getStyleProp(style, "strokeWidth") ?? "1");
-    const { arrow, terminal } = styleToArrow(style, strokeWidth);
-    const route = styleToRoute(style);
-    const multiplier = ARROW_MULTIPLIER[arrow];
-    const importance = strokeToImportance(strokeWidth, multiplier);
-    const isDashed = getStyleProp(style, "dashed") === "1";
-    const effectiveImp = isDashed && importance === 3 ? 4 : importance;
-
-    // Color from stroke — only match against palette stroke colors
-    const strokeColor = getStyleProp(style, "strokeColor");
-    const color = strokeColor ? nearestColorToken(strokeColor, "stroke") : undefined;
-
-    // Text class
-    const fontSize = Number(getStyleProp(style, "fontSize") ?? "10");
-    const textSize = nearestTextClass(fontSize, true);
-    const fontFamily = getStyleProp(style, "fontFamily") ?? "";
-    const isMono = /mono|consolas|courier/i.test(fontFamily);
-
-    const textClass: TextClass = {};
-    if (textSize !== "ct1") textClass.size = textSize;
-    if (isMono) textClass.mono = true;
-
     // Waypoints and floating edge points
     const waypoints: Position[] = [];
     let sourcePoint: Position | undefined;
@@ -320,15 +241,10 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
         if (arr.$.as === "points") {
           const points = arr.mxPoint ?? [];
           for (const pt of points) {
-            waypoints.push({
-              x: Number(pt.$.x ?? 0),
-              y: Number(pt.$.y ?? 0),
-            });
+            waypoints.push({ x: Number(pt.$.x ?? 0), y: Number(pt.$.y ?? 0) });
           }
         }
       }
-
-      // Extract sourcePoint/targetPoint for floating edges (Visio imports)
       const mxPoints = geom.mxPoint ?? [];
       for (const pt of mxPoints) {
         const ptAttrs = pt.$ ?? {};
@@ -338,41 +254,41 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
           targetPoint = { x: Number(ptAttrs.x ?? 0), y: Number(ptAttrs.y ?? 0) };
         }
       }
+
+      // Preserve edge geometry width/height for shape-based edges (flexArrow etc.)
+      const geomAttrs = geom.$ ?? {};
+      const geoW = Number(geomAttrs.width ?? 0);
+      const geoH = Number(geomAttrs.height ?? 0);
+      if (geoW > 0 && geoH > 0) {
+        style["_geoWidth"] = String(geoW);
+        style["_geoHeight"] = String(geoH);
+      }
     }
 
-    const conn: Connection = {
-      kind: "connection",
+    // Ensure html=1
+    style["html"] = "1";
+
+    const edge: Edge = {
+      kind: "edge",
       source: source ?? "",
-      arrow,
       target: target ?? "",
+      style,
     };
 
-    if (terminal) conn.terminal = terminal;
-    if (label) conn.label = label;
-    if (color) conn.color = color;
-    if (textClass.size || textClass.mono || textClass.italic) conn.textClass = textClass;
-    if (effectiveImp !== 3) conn.importance = effectiveImp as ImportanceLevel;
-    if (route !== "ortho") conn.route = route;
-    if (waypoints.length > 0) conn.waypoints = waypoints;
+    if (label) edge.label = label;
+    if (waypoints.length > 0) edge.waypoints = waypoints;
+    if (sourcePoint) edge.sourcePoint = sourcePoint;
+    if (targetPoint) edge.targetPoint = targetPoint;
 
-    // Floating edge endpoints (Visio imports use absolute coordinates)
-    if (!source && sourcePoint) conn.sourcePoint = sourcePoint;
-    if (!target && targetPoint) conn.targetPoint = targetPoint;
+    // Track parent container for edges inside groups/swimlanes
+    if (parentId && parentId !== "1" && parentId !== "0") {
+      edge.parent = parentId;
+    }
 
-    // Anchor points
-    const entryX = getStyleProp(style, "entryX");
-    if (entryX !== undefined) conn.entryX = Number(entryX);
-    const entryY = getStyleProp(style, "entryY");
-    if (entryY !== undefined) conn.entryY = Number(entryY);
-    const exitX = getStyleProp(style, "exitX");
-    if (exitX !== undefined) conn.exitX = Number(exitX);
-    const exitY = getStyleProp(style, "exitY");
-    if (exitY !== undefined) conn.exitY = Number(exitY);
-
-    return conn;
+    return edge;
   }
 
-  // Vertex (shape or text)
+  // Vertex (shape/text/anything)
   if (attrs.vertex === "1") {
     const geom = cell.mxGeometry?.[0]?.$;
     const x = Number(geom?.x ?? 0);
@@ -380,102 +296,25 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     const width = Number(geom?.width ?? 120);
     const height = Number(geom?.height ?? 60);
 
-    // Extract fontStyle bitmask (bit 0 = bold, bit 1 = italic)
-    const fontStyleVal = Number(getStyleProp(style, "fontStyle") ?? "0");
-    const isBold = (fontStyleVal & 1) === 1;
-    const isItalic = (fontStyleVal & 2) === 2;
+    // Ensure html=1 and whiteSpace=wrap are present
+    if (!style["html"]) style["html"] = "1";
+    if (!style["whiteSpace"]) style["whiteSpace"] = "wrap";
 
-    // Text element detection
-    if (style.startsWith("text;") || (style.includes("fillColor=none") && style.includes("strokeColor=none"))) {
-      const fontSize = Number(getStyleProp(style, "fontSize") ?? "14");
-      const textSize = nearestTextClass(fontSize, false, isBold);
-      const fontFamily = getStyleProp(style, "fontFamily") ?? "";
-      const isMono = /mono|consolas|courier/i.test(fontFamily);
-
-      const fontColor = getStyleProp(style, "fontColor");
-      const color = fontColor ? nearestColorToken(fontColor) : undefined;
-
-      const textClass: TextClass = {};
-      if (textSize !== "b2") textClass.size = textSize;
-      if (isMono) textClass.mono = true;
-      if (isItalic) textClass.italic = true;
-
-      const text: TextElement = {
-        kind: "text",
-        id,
-        label,
-        position: { x, y },
-      };
-
-      if (color) text.color = color;
-      if (textClass.size || textClass.mono || textClass.italic) text.textClass = textClass;
-
-      return text;
-    }
-
-    // Shape
-    const shapeType = styleToShape(style);
-    const fillColor = getStyleProp(style, "fillColor");
-    const strokeColor = getStyleProp(style, "strokeColor");
-    const color = bestColorTokenForShape(
-      fillColor && fillColor !== "none" ? fillColor : undefined,
-      strokeColor && strokeColor !== "none" ? strokeColor : undefined,
-    );
-
-    const fontSize = Number(getStyleProp(style, "fontSize") ?? "12");
-    const textSize = nearestTextClass(fontSize, false, isBold);
-    const fontFamily = getStyleProp(style, "fontFamily") ?? "";
-    const isMono = /mono|consolas|courier/i.test(fontFamily);
-
-    const textClass: TextClass = {};
-    if (textSize !== "b3") textClass.size = textSize;
-    if (isMono) textClass.mono = true;
-    if (isItalic) textClass.italic = true;
-
-    const shape: Shape = {
-      kind: "shape",
-      shapeType,
+    const node: Node = {
+      kind: "node",
       id,
       label,
       position: { x, y },
+      size: { width, height },
+      style,
     };
 
-    // Size — only include if non-default
-    shape.size = { width, height };
-
-    // Detect noFill for non-text vertices
-    if (fillColor === "none") {
-      shape.noFill = true;
+    // Parent group
+    if (parentId && parentId !== "1" && parentId !== "0") {
+      node.parent = parentId;
     }
 
-    if (color) shape.color = color;
-    if (textClass.size || textClass.mono || textClass.italic) shape.textClass = textClass;
-
-    // Stroke width
-    const strokeWidthStr = getStyleProp(style, "strokeWidth");
-    if (strokeWidthStr) {
-      const sw = Number(strokeWidthStr);
-      if (!isNaN(sw) && sw !== 1) shape.strokeWidth = sw;
-    }
-
-    // Text alignment
-    const align = getStyleProp(style, "align");
-    if (align === "left" || align === "right") shape.align = align as HAlign;
-
-    const verticalAlign = getStyleProp(style, "verticalAlign");
-    if (verticalAlign === "top" || verticalAlign === "bottom") shape.verticalAlign = verticalAlign as VAlign;
-
-    // Container
-    if (getStyleProp(style, "container") === "1" || style.includes("swimlane")) {
-      shape.container = true;
-    }
-
-    // Group — parent other than "1" means it's inside a group
-    if (parent && parent !== "1" && parent !== "0") {
-      shape.group = parent;
-    }
-
-    return shape;
+    return node;
   }
 
   return null;
@@ -507,7 +346,6 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     throw new Error("Could not find mxGraphModel root in drawio XML.");
   }
 
-  // Build parent map for group coordinate conversion
   // Collect all cells: plain mxCells + UserObject-wrapped mxCells
   const rawMxCells: unknown[] = root.mxCell ?? [];
   const userObjects: unknown[] = root.UserObject ?? [];
@@ -519,7 +357,6 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const innerCells = (uo as any).mxCell ?? [];
     for (const inner of innerCells) {
-      // Merge UserObject id/label onto inner mxCell
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const merged = { ...(inner as any) };
       merged.$ = { ...(merged.$ ?? {}), id: uoAttrs.id };
@@ -528,17 +365,7 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     }
   }
 
-  const parentMap = new Map<string, unknown[]>();
-
-  // -----------------------------------------------------------------------
-  // Visio container merge pre-pass
-  // Visio imports create a 3-cell pattern:
-  //   Parent: UserObject vertex with fillColor=none;strokeColor=none (invisible container)
-  //   Child A: vertex with shape=stencil(...) (the visible shape outline)
-  //   Child B: vertex with style starting "text;" (the label)
-  // We merge these into a single shape using the container's geometry + text child's label.
-  // -----------------------------------------------------------------------
-
+  // Build parent→children map
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const childrenByParent = new Map<string, any[]>();
   for (const cell of cells) {
@@ -553,27 +380,9 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     }
   }
 
-  // Classify merged Visio containers by dimensions + stencil properties
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  function classifyMergedShape(containerStyle: string, width: number, height: number, stencilChildren: any[]): string {
-    const aspect = width / height;
-    const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
-    const stencilRounded = stencilStyle.includes("rounded=1");
-    const containerRounded = containerStyle.includes("rounded=1");
-    const isRounded = stencilRounded || containerRounded;
-
-    // Square + single stencil → circle
-    if (stencilChildren.length === 1 && aspect >= 0.8 && aspect <= 1.2 && width >= 40) {
-      if (isRounded || width >= 60) return "circle";
-    }
-
-    if (isRounded) return "rbox";
-    return "box";
-  }
-
-  // Identify Visio cell groups: invisible container with stencil children + optional text child.
-  // Patterns: 1 stencil + 1 text (standard), N stencils + 1 text (complex icons),
-  //           N stencils + 0 text (unlabeled icons)
+  // -----------------------------------------------------------------------
+  // Visio container merge pre-pass
+  // -----------------------------------------------------------------------
   const consumedIds = new Set<string>();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const mergedGroups = new Map<string, { stencilChildren: any[]; textChild: any | null }>();
@@ -582,19 +391,15 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const c = cell as any;
     const attrs = c.$ ?? {};
-    const style: string = attrs.style ?? "";
-    const id: string = attrs.id;
+    const cellStyle: string = attrs.style ?? "";
+    const cellId: string = attrs.id;
 
-    // Skip non-vertices and root cells
-    if (attrs.vertex !== "1" || id === "0" || id === "1") continue;
+    if (attrs.vertex !== "1" || cellId === "0" || cellId === "1") continue;
+    if (!cellStyle.includes("fillColor=none") || !cellStyle.includes("strokeColor=none")) continue;
 
-    // Candidate: invisible container with fillColor=none and strokeColor=none
-    if (!style.includes("fillColor=none") || !style.includes("strokeColor=none")) continue;
-
-    const children = childrenByParent.get(id);
+    const children = childrenByParent.get(cellId);
     if (!children || children.length === 0) continue;
 
-    // Classify children
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const stencilChildren: any[] = [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -608,11 +413,8 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       } else if (childStyle.startsWith("text;")) {
         textChild = child;
       } else {
-        // Check if child is itself a merged container (nested Visio groups)
-        const childId = (child.$ ?? {}).id;
         const childChildStyle: string = (child.$ ?? {}).style ?? "";
         if (childChildStyle.includes("fillColor=none") && childChildStyle.includes("strokeColor=none")) {
-          // Nested invisible container — still part of the group
           stencilChildren.push(child);
         } else {
           hasOther = true;
@@ -620,14 +422,11 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       }
     }
 
-    // Accept if we have at least 1 stencil child and no unexpected children
     if (stencilChildren.length > 0 && !hasOther) {
-      mergedGroups.set(id, { stencilChildren, textChild });
+      mergedGroups.set(cellId, { stencilChildren, textChild });
       for (const sc of stencilChildren) {
-        const scId = (sc.$ ?? {}).id;
-        consumedIds.add(scId);
-        // Also consume any children of nested stencil containers
-        const nested = childrenByParent.get(scId);
+        consumedIds.add((sc.$ ?? {}).id);
+        const nested = childrenByParent.get((sc.$ ?? {}).id);
         if (nested) {
           for (const n of nested) consumedIds.add((n.$ ?? {}).id);
         }
@@ -636,9 +435,11 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
     }
   }
 
-  const elements: DiagramElement[] = [];
-  // First pass: build ID → position map for parent-relative → absolute conversion
+  // -----------------------------------------------------------------------
+  // Build cell positions for coordinate conversion
+  // -----------------------------------------------------------------------
   const cellPositions = new Map<string, { x: number; y: number; parent?: string }>();
+  const cellParents = new Map<string, string>();
 
   for (const cell of cells) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -652,33 +453,29 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
         parent: attrs.parent,
       });
     }
-  }
-
-  // Build cell ID → parent ID map for all cells (used for coordinate conversion)
-  const cellParents = new Map<string, string>();
-  for (const cell of cells) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const c = cell as any;
-    const attrs = c.$ ?? {};
     if (attrs.id && attrs.parent && attrs.parent !== "0" && attrs.parent !== "1") {
       cellParents.set(attrs.id, attrs.parent);
     }
   }
 
+  // -----------------------------------------------------------------------
+  // Parse cells into elements
+  // -----------------------------------------------------------------------
+  const elements: DiagramElement[] = [];
+
   for (const cell of cells) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const c = cell as any;
     const attrs = c.$ ?? {};
-    const id: string = attrs.id;
+    const cellId: string = attrs.id;
 
-    // Skip consumed children of merged Visio groups
-    if (consumedIds.has(id)) continue;
+    if (consumedIds.has(cellId)) continue;
 
-    // Handle merged Visio container: emit a single Shape
-    if (mergedGroups.has(id)) {
-      const { stencilChildren, textChild } = mergedGroups.get(id)!;
+    // Handle merged Visio container
+    if (mergedGroups.has(cellId)) {
+      const { stencilChildren, textChild } = mergedGroups.get(cellId)!;
       const textLabel: string = textChild
-        ? ((textChild.$ ?? {}).value ?? "").replace(/<br\s*\/?>/g, "\\n").replace(/<[^>]+>/g, "")
+        ? extractLabel((textChild.$ ?? {}).value ?? "")
         : "";
 
       const geom = c.mxGeometry?.[0]?.$;
@@ -687,74 +484,86 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       const width = Number(geom?.width ?? 120);
       const height = Number(geom?.height ?? 60);
 
-      const style: string = attrs.style ?? "";
-      const shapeType = classifyMergedShape(style, width, height, stencilChildren);
+      // Use the stencil child's style (preserving shape=stencil(...) and all properties)
+      const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
+      const style = parseStyleString(stencilStyle);
 
-      const shape: Shape = {
-        kind: "shape",
-        shapeType,
-        id,
+      // Ensure basic properties
+      if (!style["html"]) style["html"] = "1";
+      if (!style["whiteSpace"]) style["whiteSpace"] = "wrap";
+
+      // Clean Visio noise
+      cleanVisioNoise(style);
+
+      // Theme-ify colors
+      themeifyStyle(style);
+
+      const node: Node = {
+        kind: "node",
+        id: cellId,
         label: textLabel,
         position: { x, y },
         size: { width, height },
+        style,
       };
 
-      // Detect noFill: only when stencil child actually has no fill
-      const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
-      const stencilFill = getStyleProp(stencilStyle, "fillColor");
-      if (!stencilFill || stencilFill === "none") {
-        shape.noFill = true;
-      }
-
-      // Determine color token using stencil fill + stroke together
-      const stencilStroke = getStyleProp(stencilStyle, "strokeColor");
-      const color = bestColorTokenForShape(
-        stencilFill && stencilFill !== "none" ? stencilFill : undefined,
-        stencilStroke && stencilStroke !== "none" ? stencilStroke : undefined,
-      );
-      if (color) shape.color = color;
-
-      // Stroke width from stencil child
-      const stencilStrokeWidth = getStyleProp(stencilStyle, "strokeWidth");
-      if (stencilStrokeWidth) {
-        const sw = Number(stencilStrokeWidth);
-        if (!isNaN(sw) && sw !== 1) shape.strokeWidth = sw;
-      }
-
-      // Group — parent other than "1" means it's inside a group
       const parent = attrs.parent;
       if (parent && parent !== "1" && parent !== "0") {
-        shape.group = parent;
+        node.parent = parent;
       }
 
-      elements.push(shape);
+      elements.push(node);
       continue;
     }
 
-    const el = parseCell(cell, parentMap);
-    if (el) elements.push(el);
+    const el = parseCell(cell);
+    if (el) {
+      // Clean Visio noise and theme-ify
+      cleanVisioNoise(el.style);
+      themeifyStyle(el.style);
+      elements.push(el);
+    }
   }
 
-  // Post-pass: convert parent-relative coordinates to absolute for ALL positioned elements
-  for (const el of elements) {
-    if ((el.kind === "shape" || el.kind === "text") && cellParents.has(el.id)) {
-      const parentId = cellParents.get(el.id)!;
-      const parentPos = cellPositions.get(parentId);
-      if (parentPos) {
-        el.position.x += parentPos.x;
-        el.position.y += parentPos.y;
+  // Post-pass: convert parent-relative coordinates to absolute
 
-        // Handle nested groups recursively
-        let ancestor = parentPos.parent;
-        while (ancestor && ancestor !== "0" && ancestor !== "1") {
-          const ancestorPos = cellPositions.get(ancestor);
-          if (ancestorPos) {
-            el.position.x += ancestorPos.x;
-            el.position.y += ancestorPos.y;
-            ancestor = ancestorPos.parent;
-          } else {
-            break;
-          }
+  // Helper: compute absolute offset for a parent chain
+  function getAbsoluteOffset(startParentId: string): { dx: number; dy: number } {
+    let dx = 0, dy = 0;
+    let pid: string | undefined = startParentId;
+    while (pid && pid !== "0" && pid !== "1") {
+      const pos = cellPositions.get(pid);
+      if (!pos) break;
+      dx += pos.x;
+      dy += pos.y;
+      pid = pos.parent;
+    }
+    return { dx, dy };
+  }
+
+  for (const el of elements) {
+    if (el.kind === "node" && cellParents.has(el.id)) {
+      const parentId = cellParents.get(el.id)!;
+      const { dx, dy } = getAbsoluteOffset(parentId);
+      el.position.x += dx;
+      el.position.y += dy;
+    }
+
+    // Convert edge floating points and waypoints from parent-relative to absolute
+    if (el.kind === "edge" && el.parent) {
+      const { dx, dy } = getAbsoluteOffset(el.parent);
+      if (el.sourcePoint) {
+        el.sourcePoint.x += dx;
+        el.sourcePoint.y += dy;
+      }
+      if (el.targetPoint) {
+        el.targetPoint.x += dx;
+        el.targetPoint.y += dy;
+      }
+      if (el.waypoints) {
+        for (const wp of el.waypoints) {
+          wp.x += dx;
+          wp.y += dy;
         }
       }
     }

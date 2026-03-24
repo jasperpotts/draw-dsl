@@ -5,30 +5,20 @@
 import type { Diagram, ValidationError } from "../dsl/types.js";
 import {
   uniqueIds,
-  validArrows,
-  noHexColors,
-  validTextClasses,
-  validImportance,
-  validRouting,
   validCoordinates,
   validSizes,
-  groupRefsExist,
+  parentRefsExist,
   endpointsExist,
-  waypointFormat,
+  validThemeVars,
 } from "./rules.js";
 
 const ALL_RULES = [
   uniqueIds,
-  validArrows,
-  noHexColors,
-  validTextClasses,
-  validImportance,
-  validRouting,
   validCoordinates,
   validSizes,
-  groupRefsExist,
+  parentRefsExist,
   endpointsExist,
-  waypointFormat,
+  validThemeVars,
 ];
 
 /**

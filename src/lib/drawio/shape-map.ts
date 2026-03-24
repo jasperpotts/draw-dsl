@@ -2,7 +2,14 @@
  * Bidirectional mapping between DSL shape keywords and mxGraph style strings.
  */
 
-import type { ShapeKeyword, Size } from "../dsl/types.js";
+import type { Size } from "../dsl/types.js";
+
+/** Shape keywords — kept as reference documentation, no longer in the critical path. */
+type ShapeKeyword =
+  | "box" | "rbox" | "diamond" | "circle" | "ellipse" | "cylinder" | "cloud"
+  | "parallelogram" | "hexagon" | "trapezoid" | "triangle" | "note" | "document"
+  | "person" | "step" | "card" | "swimlane" | "process" | "cube"
+  | "curlyBracket" | "flexArrow" | "umlActor";
 
 // ---------------------------------------------------------------------------
 // Known shapes

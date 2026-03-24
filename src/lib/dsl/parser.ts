@@ -1,39 +1,74 @@
 /**
- * DSL Parser: text → AST
+ * DSL Parser v2: text → AST
  *
- * Parses the draw-dsl text format into a Diagram AST.
- * Collects errors with line numbers and continues parsing.
+ * Parses the v2 draw-dsl text format into a Diagram AST.
+ * Supports `node` and `edge` elements with { style-block } syntax.
  */
 
 import type {
-  Diagram, DiagramElement, Shape, Connection, TextElement,
-  ArrowOperator, TerminalMarker, ColorToken, TextClass,
-  TextSizeClass, RouteType, ImportanceLevel, Position, Size,
-  ParseError, HAlign, VAlign,
+  Diagram, Node, Edge, ArrowOperator, TerminalMarker,
+  StyleMap, Position, Size, ParseError,
 } from "./types.js";
 import { ALL_ARROW_OPERATORS, BIDIRECTIONAL_ARROWS } from "../drawio/arrow-map.js";
-import { KNOWN_SHAPES } from "../drawio/shape-map.js";
 
 // ---------------------------------------------------------------------------
 // Tokenizer
 // ---------------------------------------------------------------------------
 
 interface Token {
-  type: "string" | "word";
+  type: "string" | "word" | "styleBlock";
   value: string;
 }
 
+/**
+ * Tokenize a line, handling quoted strings and { } style blocks.
+ */
 function tokenizeLine(line: string): Token[] {
   const tokens: Token[] = [];
-  const re = /"((?:[^"\\]|\\.)*)"|(\S+)/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(line)) !== null) {
-    if (m[1] !== undefined) {
-      tokens.push({ type: "string", value: m[1] });
-    } else {
-      tokens.push({ type: "word", value: m[2] });
+  let i = 0;
+
+  while (i < line.length) {
+    // Skip whitespace
+    if (/\s/.test(line[i])) { i++; continue; }
+
+    // Quoted string
+    if (line[i] === '"') {
+      let j = i + 1;
+      while (j < line.length && line[j] !== '"') {
+        if (line[j] === '\\') j++; // skip escaped char
+        j++;
+      }
+      const raw = line.slice(i + 1, j);
+      tokens.push({ type: "string", value: raw.replace(/\\"/g, '"').replace(/\\\\/g, '\\') });
+      i = j + 1;
+      continue;
     }
+
+    // Style block { ... }
+    if (line[i] === '{') {
+      let depth = 1;
+      let j = i + 1;
+      while (j < line.length && depth > 0) {
+        if (line[j] === '{') depth++;
+        if (line[j] === '}') depth--;
+        j++;
+      }
+      // Content between { and }
+      const content = line.slice(i + 1, j - 1).trim();
+      tokens.push({ type: "styleBlock", value: content });
+      i = j;
+      continue;
+    }
+
+    // Word (non-whitespace, non-quote, non-brace)
+    let j = i;
+    while (j < line.length && !/[\s"{}]/.test(line[j])) {
+      j++;
+    }
+    tokens.push({ type: "word", value: line.slice(i, j) });
+    i = j;
   }
+
   return tokens;
 }
 
@@ -41,43 +76,7 @@ function tokenizeLine(line: string): Token[] {
 // Helpers
 // ---------------------------------------------------------------------------
 
-const VALID_COLOR_TOKENS = new Set<string>([
-  "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9",
-]);
-
-const VALID_SIZE_CLASSES = new Set<string>([
-  "h1", "h2", "h3", "h4",
-  "b1", "b2", "b3", "b4", "b5", "b6",
-  "ct1", "ct2",
-]);
-
-const VALID_ROUTES = new Set<string>([
-  "ortho", "straight", "curved", "elbow", "er", "iso",
-]);
-
-function isColorToken(s: string): s is ColorToken {
-  return VALID_COLOR_TOKENS.has(s);
-}
-
-function parseTextClass(value: string): TextClass | null {
-  const parts = value.split(",").map((p) => p.trim());
-  const result: TextClass = {};
-  for (const part of parts) {
-    if (part === "mono") {
-      result.mono = true;
-    } else if (part === "italic") {
-      result.italic = true;
-    } else if (VALID_SIZE_CLASSES.has(part)) {
-      result.size = part as TextSizeClass;
-    } else {
-      return null;
-    }
-  }
-  return result;
-}
-
 function parsePosition(token: string): Position | null {
-  // @X,Y format
   if (!token.startsWith("@")) return null;
   const coords = token.slice(1).split(",");
   if (coords.length !== 2) return null;
@@ -88,29 +87,54 @@ function parsePosition(token: string): Position | null {
 }
 
 function parseSizeToken(token: string): Size | null {
-  // [WxH] format — token includes brackets
-  const m = token.match(/^\[(\d+)x(\d+)\]$/);
+  const m = token.match(/^\[([0-9.]+)x([0-9.]+)\]$/);
   if (!m) return null;
   return { width: Number(m[1]), height: Number(m[2]) };
 }
 
-function parseKeyValue(token: string): { key: string; value: string } | null {
-  const idx = token.indexOf("=");
-  if (idx <= 0) return null;
-  return { key: token.slice(0, idx), value: token.slice(idx + 1) };
+/**
+ * Parse a style block string into a StyleMap.
+ * Handles key=value pairs separated by ; and shorthand tokens like $c0.
+ */
+function parseStyleBlock(content: string): StyleMap {
+  const style: StyleMap = {};
+  if (!content) return style;
+
+  const parts = content.split(";").map((p) => p.trim()).filter((p) => p !== "");
+
+  for (const part of parts) {
+    // Shorthand color token: $c0 → expand to fill/stroke/font
+    if (/^\$\w+$/.test(part) && !part.includes(".")) {
+      // e.g., "$c0" → fillColor=$c0.fill; strokeColor=$c0.stroke; fontColor=$c0.font
+      const token = part; // e.g., "$c0"
+      style["fillColor"] = `${token}.fill`;
+      style["strokeColor"] = `${token}.stroke`;
+      style["fontColor"] = `${token}.font`;
+      continue;
+    }
+
+    const eqIdx = part.indexOf("=");
+    if (eqIdx === -1) {
+      // Value-less flag (e.g., "rounded", "text", "swimlane")
+      style[part] = "";
+    } else {
+      const key = part.slice(0, eqIdx).trim();
+      const value = part.slice(eqIdx + 1).trim();
+      if (key) style[key] = value;
+    }
+  }
+
+  return style;
 }
 
 /**
  * Try to match an arrow operator at the given token.
- * Returns the arrow, terminal marker, and whether it's the full token.
  */
 function matchArrow(token: string): { arrow: ArrowOperator; terminal?: TerminalMarker } | null {
-  // Try each arrow operator (longest first)
   for (const op of ALL_ARROW_OPERATORS) {
     if (token === op) {
       return { arrow: op as ArrowOperator };
     }
-    // Check for terminal markers on non-bidirectional arrows
     if (token.startsWith(op) && !BIDIRECTIONAL_ARROWS.has(op as ArrowOperator)) {
       const rest = token.slice(op.length);
       if (rest === "-x" || rest === "-o") {
@@ -121,338 +145,191 @@ function matchArrow(token: string): { arrow: ArrowOperator; terminal?: TerminalM
   return null;
 }
 
-/**
- * Determine if a word token could be a shape keyword.
- * Known shapes are always shape keywords. Unknown words are shape keywords
- * if the line structure matches the shape pattern (ID, label, @position follow).
- */
-function isShapeLine(tokens: Token[]): boolean {
-  if (tokens.length < 4) return false;
-  const first = tokens[0].value;
-
-  // "diagram" and "text" are handled before this check
-  // Known shape keyword
-  if (KNOWN_SHAPES.has(first)) return true;
-
-  // Unknown word — check if followed by ID pattern + quoted string + @position
-  // i.e., tokens: SHAPE_WORD ID "label" @X,Y ...
-  if (tokens[0].type !== "word") return false;
-  if (tokens[1].type !== "word") return false;
-  if (tokens[2].type !== "string") return false;
-  if (tokens[3].type !== "word" || !tokens[3].value.startsWith("@")) return false;
-  return true;
-}
-
 // ---------------------------------------------------------------------------
 // Line parsers
 // ---------------------------------------------------------------------------
 
-function parseShapeLine(
+function parseNodeLine(
   tokens: Token[],
   lineNum: number,
   errors: ParseError[],
-): Shape | null {
-  // SHAPE ID "label" @X,Y [WxH] [c=C] [text=CLASS] [in=GROUP]
-  const shapeType = tokens[0].value;
-  const id = tokens[1]?.value;
-  if (!id) {
-    errors.push({ line: lineNum, message: "Shape missing ID" });
-    return null;
-  }
+): Node | null {
+  // node ID "label" @X,Y [WxH] [in=PARENT] { style-props }
+  let idx = 1; // skip "node" keyword
 
-  const labelToken = tokens[2];
+  const id = tokens[idx]?.value;
+  if (!id) { errors.push({ line: lineNum, message: "Node missing ID" }); return null; }
+  idx++;
+
+  const labelToken = tokens[idx];
   if (!labelToken || labelToken.type !== "string") {
-    errors.push({ line: lineNum, message: `Shape '${id}' missing quoted label` });
+    errors.push({ line: lineNum, message: `Node '${id}' missing quoted label` });
     return null;
   }
+  idx++;
 
-  const posToken = tokens[3];
+  const posToken = tokens[idx];
   if (!posToken) {
-    errors.push({ line: lineNum, message: `Shape '${id}' missing position (@X,Y)` });
+    errors.push({ line: lineNum, message: `Node '${id}' missing position (@X,Y)` });
     return null;
   }
   const position = parsePosition(posToken.value);
   if (!position) {
-    errors.push({ line: lineNum, message: `Shape '${id}' has invalid position: ${posToken.value}` });
+    errors.push({ line: lineNum, message: `Node '${id}' has invalid position: ${posToken.value}` });
     return null;
   }
+  idx++;
 
-  const shape: Shape = {
-    kind: "shape",
-    shapeType,
+  const node: Node = {
+    kind: "node",
     id,
     label: labelToken.value,
     position,
+    style: {},
     line: lineNum,
   };
 
-  // Parse remaining tokens (optional attributes)
-  for (let i = 4; i < tokens.length; i++) {
-    const tok = tokens[i].value;
+  // Parse optional attributes
+  while (idx < tokens.length) {
+    const tok = tokens[idx];
 
-    // Size override [WxH]
-    const size = parseSizeToken(tok);
-    if (size) {
-      shape.size = size;
-      continue;
-    }
+    // Size [WxH]
+    if (tok.type === "word") {
+      const size = parseSizeToken(tok.value);
+      if (size) { node.size = size; idx++; continue; }
 
-    // Key=value attributes
-    const kv = parseKeyValue(tok);
-    if (kv) {
-      if (kv.key === "c") {
-        if (isColorToken(kv.value)) {
-          shape.color = kv.value;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid color token '${kv.value}'` });
-        }
-      } else if (kv.key === "text") {
-        const tc = parseTextClass(kv.value);
-        if (tc) {
-          shape.textClass = tc;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid text class '${kv.value}'` });
-        }
-      } else if (kv.key === "align") {
-        if (kv.value === "left" || kv.value === "center" || kv.value === "right") {
-          shape.align = kv.value as HAlign;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid align value '${kv.value}'` });
-        }
-      } else if (kv.key === "valign") {
-        if (kv.value === "top" || kv.value === "middle" || kv.value === "bottom") {
-          shape.verticalAlign = kv.value as VAlign;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid valign value '${kv.value}'` });
-        }
-      } else if (kv.key === "fill") {
-        if (kv.value === "none") {
-          shape.noFill = true;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid fill value '${kv.value}'` });
-        }
-      } else if (kv.key === "sw") {
-        const sw = Number(kv.value);
-        if (Number.isFinite(sw) && sw > 0) {
-          shape.strokeWidth = sw;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid stroke width '${kv.value}'` });
-        }
-      } else if (kv.key === "container") {
-        shape.container = kv.value === "true";
-      } else if (kv.key === "in") {
-        shape.group = kv.value;
-      } else {
-        errors.push({ line: lineNum, message: `Unknown shape attribute '${kv.key}'` });
+      // in=PARENT
+      if (tok.value.startsWith("in=")) {
+        node.parent = tok.value.slice(3);
+        idx++;
+        continue;
       }
+    }
+
+    // Style block { ... }
+    if (tok.type === "styleBlock") {
+      node.style = parseStyleBlock(tok.value);
+      idx++;
       continue;
     }
+
+    idx++;
   }
 
-  return shape;
+  return node;
 }
 
-function parseConnectionLine(
+function parseEdgeLine(
   tokens: Token[],
   lineNum: number,
   errors: ParseError[],
-): Connection | null {
-  // SOURCE ARROW TARGET ["label"] [c=C] [text=CLASS] [imp=N] [route=R] [via X,Y ...]
-  if (tokens.length < 3) {
-    errors.push({ line: lineNum, message: "Connection requires SOURCE ARROW TARGET" });
+): Edge | null {
+  // edge SOURCE ARROW TARGET ["label"] [via X,Y ...] { style-props }
+  let idx = 1; // skip "edge" keyword
+
+  if (tokens.length < 4) {
+    errors.push({ line: lineNum, message: "Edge requires SOURCE ARROW TARGET" });
     return null;
   }
 
-  const sourceToken = tokens[0].value;
-  const arrowMatch = matchArrow(tokens[1].value);
+  const sourceToken = tokens[idx].value;
+  idx++;
+
+  const arrowMatch = matchArrow(tokens[idx].value);
   if (!arrowMatch) {
-    errors.push({ line: lineNum, message: `Unknown arrow operator '${tokens[1].value}'` });
+    errors.push({ line: lineNum, message: `Unknown arrow operator '${tokens[idx].value}'` });
     return null;
   }
+  idx++;
 
-  const targetToken = tokens[2].value;
+  const targetToken = tokens[idx].value;
+  idx++;
 
-  // Parse floating edge endpoints: @X,Y means no cell ID, just absolute coordinates
+  // Parse floating endpoints
   let source = sourceToken;
   let sourcePoint: Position | undefined;
   if (sourceToken.startsWith("@")) {
     const pos = parsePosition(sourceToken);
-    if (pos) {
-      sourcePoint = pos;
-      source = "";
-    }
+    if (pos) { sourcePoint = pos; source = ""; }
   }
 
   let target = targetToken;
   let targetPoint: Position | undefined;
   if (targetToken.startsWith("@")) {
     const pos = parsePosition(targetToken);
-    if (pos) {
-      targetPoint = pos;
-      target = "";
-    }
+    if (pos) { targetPoint = pos; target = ""; }
   }
 
-  const connection: Connection = {
-    kind: "connection",
+  const edge: Edge = {
+    kind: "edge",
     source,
-    arrow: arrowMatch.arrow,
     target,
+    arrow: arrowMatch.arrow,
+    style: {},
     line: lineNum,
   };
 
-  if (sourcePoint) connection.sourcePoint = sourcePoint;
-  if (targetPoint) connection.targetPoint = targetPoint;
-
-  if (arrowMatch.terminal) {
-    connection.terminal = arrowMatch.terminal;
-  }
+  if (sourcePoint) edge.sourcePoint = sourcePoint;
+  if (targetPoint) edge.targetPoint = targetPoint;
+  if (arrowMatch.terminal) edge.terminal = arrowMatch.terminal;
 
   // Parse remaining tokens
   let inVia = false;
   const waypoints: Position[] = [];
 
-  for (let i = 3; i < tokens.length; i++) {
-    const tok = tokens[i];
+  while (idx < tokens.length) {
+    const tok = tokens[idx];
+
+    // Label
+    if (tok.type === "string") {
+      edge.label = tok.value;
+      idx++;
+      continue;
+    }
+
+    // Style block
+    if (tok.type === "styleBlock") {
+      edge.style = parseStyleBlock(tok.value);
+      idx++;
+      continue;
+    }
+
+    // in=PARENT
+    if (tok.type === "word" && tok.value.startsWith("in=")) {
+      edge.parent = tok.value.slice(3);
+      idx++;
+      continue;
+    }
 
     // Via waypoints
     if (tok.value === "via") {
       inVia = true;
+      idx++;
       continue;
     }
 
-    if (inVia) {
-      // Parse X,Y waypoint
+    if (inVia && tok.type === "word") {
       const parts = tok.value.split(",");
       if (parts.length === 2) {
         const x = Number(parts[0]);
         const y = Number(parts[1]);
         if (Number.isFinite(x) && Number.isFinite(y)) {
           waypoints.push({ x, y });
+          idx++;
           continue;
         }
       }
-      // Not a valid waypoint — stop parsing via
       inVia = false;
     }
 
-    if (tok.type === "string") {
-      connection.label = tok.value;
-      continue;
-    }
-
-    const kv = parseKeyValue(tok.value);
-    if (kv) {
-      if (kv.key === "c") {
-        if (isColorToken(kv.value)) {
-          connection.color = kv.value;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid color token '${kv.value}'` });
-        }
-      } else if (kv.key === "text") {
-        const tc = parseTextClass(kv.value);
-        if (tc) {
-          connection.textClass = tc;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid text class '${kv.value}'` });
-        }
-      } else if (kv.key === "imp") {
-        const imp = Number(kv.value);
-        if (imp >= 1 && imp <= 4) {
-          connection.importance = imp as ImportanceLevel;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid importance level '${kv.value}'` });
-        }
-      } else if (kv.key === "route") {
-        if (VALID_ROUTES.has(kv.value)) {
-          connection.route = kv.value as RouteType;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid route type '${kv.value}'` });
-        }
-      } else if (kv.key === "entry") {
-        const parts = kv.value.split(",");
-        if (parts.length === 2) {
-          connection.entryX = Number(parts[0]);
-          connection.entryY = Number(parts[1]);
-        }
-      } else if (kv.key === "exit") {
-        const parts = kv.value.split(",");
-        if (parts.length === 2) {
-          connection.exitX = Number(parts[0]);
-          connection.exitY = Number(parts[1]);
-        }
-      } else {
-        errors.push({ line: lineNum, message: `Unknown connection attribute '${kv.key}'` });
-      }
-      continue;
-    }
+    idx++;
   }
 
   if (waypoints.length > 0) {
-    connection.waypoints = waypoints;
+    edge.waypoints = waypoints;
   }
 
-  return connection;
-}
-
-function parseTextLine(
-  tokens: Token[],
-  lineNum: number,
-  errors: ParseError[],
-): TextElement | null {
-  // text ID "label" @X,Y [c=C] [text=CLASS]
-  const id = tokens[1]?.value;
-  if (!id) {
-    errors.push({ line: lineNum, message: "Text element missing ID" });
-    return null;
-  }
-
-  const labelToken = tokens[2];
-  if (!labelToken || labelToken.type !== "string") {
-    errors.push({ line: lineNum, message: `Text '${id}' missing quoted label` });
-    return null;
-  }
-
-  const posToken = tokens[3];
-  if (!posToken) {
-    errors.push({ line: lineNum, message: `Text '${id}' missing position (@X,Y)` });
-    return null;
-  }
-  const position = parsePosition(posToken.value);
-  if (!position) {
-    errors.push({ line: lineNum, message: `Text '${id}' has invalid position: ${posToken.value}` });
-    return null;
-  }
-
-  const textEl: TextElement = {
-    kind: "text",
-    id,
-    label: labelToken.value,
-    position,
-    line: lineNum,
-  };
-
-  for (let i = 4; i < tokens.length; i++) {
-    const kv = parseKeyValue(tokens[i].value);
-    if (kv) {
-      if (kv.key === "c") {
-        if (isColorToken(kv.value)) {
-          textEl.color = kv.value;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid color token '${kv.value}'` });
-        }
-      } else if (kv.key === "text") {
-        const tc = parseTextClass(kv.value);
-        if (tc) {
-          textEl.textClass = tc;
-        } else {
-          errors.push({ line: lineNum, message: `Invalid text class '${kv.value}'` });
-        }
-      }
-    }
-  }
-
-  return textEl;
+  return edge;
 }
 
 // ---------------------------------------------------------------------------
@@ -491,28 +368,18 @@ export function parseDsl(dsl: string): ParseResult {
       continue;
     }
 
-    // Text element
-    if (keyword === "text") {
-      const textEl = parseTextLine(tokens, lineNum, errors);
-      if (textEl) diagram.elements.push(textEl);
+    // Node element
+    if (keyword === "node") {
+      const node = parseNodeLine(tokens, lineNum, errors);
+      if (node) diagram.elements.push(node);
       continue;
     }
 
-    // Shape line: known shape keyword OR Rule 3 shape pattern
-    if (isShapeLine(tokens)) {
-      const shape = parseShapeLine(tokens, lineNum, errors);
-      if (shape) diagram.elements.push(shape);
+    // Edge element
+    if (keyword === "edge") {
+      const edge = parseEdgeLine(tokens, lineNum, errors);
+      if (edge) diagram.elements.push(edge);
       continue;
-    }
-
-    // Connection line: try to match SOURCE ARROW TARGET
-    if (tokens.length >= 3 && tokens[1].type === "word") {
-      const arrowMatch = matchArrow(tokens[1].value);
-      if (arrowMatch) {
-        const conn = parseConnectionLine(tokens, lineNum, errors);
-        if (conn) diagram.elements.push(conn);
-        continue;
-      }
     }
 
     errors.push({ line: lineNum, message: `Unrecognized line: ${line}` });

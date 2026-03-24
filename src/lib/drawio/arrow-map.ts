@@ -2,7 +2,13 @@
  * Bidirectional mapping between DSL arrow operators and mxGraph edge styles.
  */
 
-import type { ArrowOperator, TerminalMarker, RouteType, ImportanceLevel } from "../dsl/types.js";
+import type { ArrowOperator, TerminalMarker } from "../dsl/types.js";
+
+/** Connection routing styles. */
+export type RouteType = "ortho" | "straight" | "curved" | "elbow" | "er" | "iso";
+
+/** Importance levels 1–4. */
+export type ImportanceLevel = 1 | 2 | 3 | 4;
 
 // ---------------------------------------------------------------------------
 // Forward mapping: DSL arrow → mxGraph style properties

@@ -1,40 +1,41 @@
 /**
- * AST types for the draw-dsl language.
+ * AST types for the draw-dsl v2 language.
  *
- * These types represent the parsed structure of a .dsl file. They are the
- * shared contract between parser, serializer, validator, and XML builder.
+ * The v2 DSL is a thin layer over draw.io's native style format.
+ * Style properties pass through as a flat key-value map (StyleMap),
+ * with optional theme variable substitution ($c0, $font.mono, etc.).
  */
 
 // ---------------------------------------------------------------------------
-// Scalar tokens
+// Primitives
 // ---------------------------------------------------------------------------
 
-/** The 16 built-in shape keywords. Unknown keywords are allowed via Rule 3. */
-export type ShapeKeyword =
-  | "box"
-  | "rbox"
-  | "diamond"
-  | "circle"
-  | "ellipse"
-  | "cylinder"
-  | "cloud"
-  | "parallelogram"
-  | "hexagon"
-  | "trapezoid"
-  | "triangle"
-  | "note"
-  | "document"
-  | "person"
-  | "step"
-  | "card"
-  | "swimlane"
-  | "process"
-  | "cube"
-  | "curlyBracket"
-  | "flexArrow"
-  | "umlActor";
+/** Canvas position (absolute coordinates). */
+export interface Position {
+  x: number;
+  y: number;
+}
 
-/** Arrow operators recognised by the parser. */
+/** Element size override. */
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/**
+ * Flat map of draw.io style properties.
+ *
+ * Keys are mxGraph style property names (shape, fillColor, strokeColor, etc.).
+ * Values are either:
+ *   - literal values ("cylinder3", "#ff0000", "1")
+ *   - theme variable references ("$c0.fill", "$c1.stroke", "$font.mono")
+ *
+ * Value-less keys (e.g., "rounded", "ellipse", "text", "swimlane") are stored
+ * with value "" to indicate presence-only flags in the draw.io style string.
+ */
+export type StyleMap = Record<string, string>;
+
+/** Arrow operators recognised by the parser (convenience shortcuts). */
 export type ArrowOperator =
   | "->"
   | "-->"
@@ -54,115 +55,71 @@ export type ArrowOperator =
 /** Terminal markers that can be appended to non-bidirectional arrows. */
 export type TerminalMarker = "-x" | "-o";
 
-/** Color tokens c0–c9. */
-export type ColorToken =
-  | "c0" | "c1" | "c2" | "c3" | "c4"
-  | "c5" | "c6" | "c7" | "c8" | "c9";
-
-/** Text size classes. */
-export type TextSizeClass =
-  | "h1" | "h2" | "h3" | "h4"
-  | "b1" | "b2" | "b3" | "b4" | "b5" | "b6"
-  | "ct1" | "ct2";
-
-/** Parsed text class attribute (e.g. `text=b1,mono`). */
-export interface TextClass {
-  size?: TextSizeClass;
-  mono?: boolean;
-  italic?: boolean;
-}
-
-/** Connection routing styles. */
-export type RouteType = "ortho" | "straight" | "curved" | "elbow" | "er" | "iso";
-
-/** Importance levels 1–4. */
-export type ImportanceLevel = 1 | 2 | 3 | 4;
-
-/** Canvas position (absolute coordinates). */
-export interface Position {
-  x: number;
-  y: number;
-}
-
-/** Element size override. */
-export interface Size {
-  width: number;
-  height: number;
-}
-
 // ---------------------------------------------------------------------------
 // Diagram elements
 // ---------------------------------------------------------------------------
 
-export type HAlign = "left" | "center" | "right";
-export type VAlign = "top" | "middle" | "bottom";
-
-export interface Shape {
-  kind: "shape";
-  /** Shape keyword — one of 16 known, or any string for Rule 3 shapes. */
-  shapeType: string;
+/** A vertex (shape, text, stencil, table, swimlane — anything). */
+export interface Node {
+  kind: "node";
   id: string;
   label: string;
   position: Position;
   size?: Size;
-  color?: ColorToken;
-  textClass?: TextClass;
-  align?: HAlign;
-  verticalAlign?: VAlign;
-  /** Whether the shape has no fill (transparent background). */
-  noFill?: boolean;
-  /** Border stroke width (default is 1, omitted when 1). */
-  strokeWidth?: number;
-  /** Whether this shape acts as a container. */
-  container?: boolean;
-  /** Parent group shape ID. */
-  group?: string;
+  /**
+   * Full draw.io style properties.
+   * Theme variables ($c0.fill, $font.mono, etc.) are resolved at build time.
+   * All other properties pass through verbatim to the mxCell style string.
+   */
+  style: StyleMap;
+  /** Parent container node ID. */
+  parent?: string;
   /** Source line number (1-based). */
   line?: number;
 }
 
-export interface Connection {
-  kind: "connection";
+/** An edge (connection between nodes). */
+export interface Edge {
+  kind: "edge";
   source: string;
-  arrow: ArrowOperator;
-  terminal?: TerminalMarker;
   target: string;
   label?: string;
-  color?: ColorToken;
-  textClass?: TextClass;
-  importance?: ImportanceLevel;
-  route?: RouteType;
+  /**
+   * Full draw.io edge style properties.
+   * Arrow operators set defaults (endArrow, startArrow, etc.) that can be
+   * overridden by explicit properties in the style block.
+   */
+  style: StyleMap;
+  /** The arrow operator used in DSL syntax (for serialization). */
+  arrow?: ArrowOperator;
+  /** Terminal marker (for serialization). */
+  terminal?: TerminalMarker;
+  /** Parent container node ID (for edges inside groups/swimlanes). */
+  parent?: string;
+  /** Waypoints for routing. */
   waypoints?: Position[];
-  /** Entry anchor point on target (0.0–1.0). */
-  entryX?: number;
-  entryY?: number;
-  /** Exit anchor point on source (0.0–1.0). */
-  exitX?: number;
-  exitY?: number;
-  /** Absolute coordinate when no source cell (Visio floating edge). */
+  /** Floating source point (when source is empty). */
   sourcePoint?: Position;
-  /** Absolute coordinate when no target cell (Visio floating edge). */
+  /** Floating target point (when target is empty). */
   targetPoint?: Position;
   /** Source line number (1-based). */
   line?: number;
 }
 
-export interface TextElement {
-  kind: "text";
-  id: string;
-  label: string;
-  position: Position;
-  color?: ColorToken;
-  textClass?: TextClass;
-  /** Source line number (1-based). */
-  line?: number;
-}
-
-export type DiagramElement = Shape | Connection | TextElement;
+export type DiagramElement = Node | Edge;
 
 export interface Diagram {
   title?: string;
   elements: DiagramElement[];
+}
+
+// ---------------------------------------------------------------------------
+// Theme variable helpers
+// ---------------------------------------------------------------------------
+
+/** Check if a style value is a theme variable reference. */
+export function isThemeVar(value: string): boolean {
+  return value.startsWith("$");
 }
 
 // ---------------------------------------------------------------------------
