@@ -189,8 +189,10 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     if (textSize !== "ct1") textClass.size = textSize;
     if (isMono) textClass.mono = true;
 
-    // Waypoints
+    // Waypoints and floating edge points
     const waypoints: Position[] = [];
+    let sourcePoint: Position | undefined;
+    let targetPoint: Position | undefined;
     const geom = cell.mxGeometry?.[0];
     if (geom) {
       const arrays = geom.Array ?? [];
@@ -203,6 +205,17 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
               y: Number(pt.$.y ?? 0),
             });
           }
+        }
+      }
+
+      // Extract sourcePoint/targetPoint for floating edges (Visio imports)
+      const mxPoints = geom.mxPoint ?? [];
+      for (const pt of mxPoints) {
+        const ptAttrs = pt.$ ?? {};
+        if (ptAttrs.as === "sourcePoint") {
+          sourcePoint = { x: Number(ptAttrs.x ?? 0), y: Number(ptAttrs.y ?? 0) };
+        } else if (ptAttrs.as === "targetPoint") {
+          targetPoint = { x: Number(ptAttrs.x ?? 0), y: Number(ptAttrs.y ?? 0) };
         }
       }
     }
@@ -221,6 +234,10 @@ function parseCell(cell: any, parentMap: Map<string, any[]>): DiagramElement | n
     if (effectiveImp !== 3) conn.importance = effectiveImp as ImportanceLevel;
     if (route !== "ortho") conn.route = route;
     if (waypoints.length > 0) conn.waypoints = waypoints;
+
+    // Floating edge endpoints (Visio imports use absolute coordinates)
+    if (!source && sourcePoint) conn.sourcePoint = sourcePoint;
+    if (!target && targetPoint) conn.targetPoint = targetPoint;
 
     // Anchor points
     const entryX = getStyleProp(style, "entryX");
@@ -377,6 +394,94 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
 
   const parentMap = new Map<string, unknown[]>();
 
+  // -----------------------------------------------------------------------
+  // Visio container merge pre-pass
+  // Visio imports create a 3-cell pattern:
+  //   Parent: UserObject vertex with fillColor=none;strokeColor=none (invisible container)
+  //   Child A: vertex with shape=stencil(...) (the visible shape outline)
+  //   Child B: vertex with style starting "text;" (the label)
+  // We merge these into a single shape using the container's geometry + text child's label.
+  // -----------------------------------------------------------------------
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const childrenByParent = new Map<string, any[]>();
+  for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    const parent = attrs.parent;
+    if (parent && parent !== "0" && parent !== "1") {
+      const list = childrenByParent.get(parent) ?? [];
+      list.push(c);
+      childrenByParent.set(parent, list);
+    }
+  }
+
+  // Identify Visio cell groups: invisible container with stencil children + optional text child.
+  // Patterns: 1 stencil + 1 text (standard), N stencils + 1 text (complex icons),
+  //           N stencils + 0 text (unlabeled icons)
+  const consumedIds = new Set<string>();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const mergedGroups = new Map<string, { stencilChildren: any[]; textChild: any | null }>();
+
+  for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    const style: string = attrs.style ?? "";
+    const id: string = attrs.id;
+
+    // Skip non-vertices and root cells
+    if (attrs.vertex !== "1" || id === "0" || id === "1") continue;
+
+    // Candidate: invisible container with fillColor=none and strokeColor=none
+    if (!style.includes("fillColor=none") || !style.includes("strokeColor=none")) continue;
+
+    const children = childrenByParent.get(id);
+    if (!children || children.length === 0) continue;
+
+    // Classify children
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const stencilChildren: any[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let textChild: any = null;
+    let hasOther = false;
+
+    for (const child of children) {
+      const childStyle: string = (child.$ ?? {}).style ?? "";
+      if (childStyle.includes("shape=stencil(")) {
+        stencilChildren.push(child);
+      } else if (childStyle.startsWith("text;")) {
+        textChild = child;
+      } else {
+        // Check if child is itself a merged container (nested Visio groups)
+        const childId = (child.$ ?? {}).id;
+        const childChildStyle: string = (child.$ ?? {}).style ?? "";
+        if (childChildStyle.includes("fillColor=none") && childChildStyle.includes("strokeColor=none")) {
+          // Nested invisible container — still part of the group
+          stencilChildren.push(child);
+        } else {
+          hasOther = true;
+        }
+      }
+    }
+
+    // Accept if we have at least 1 stencil child and no unexpected children
+    if (stencilChildren.length > 0 && !hasOther) {
+      mergedGroups.set(id, { stencilChildren, textChild });
+      for (const sc of stencilChildren) {
+        const scId = (sc.$ ?? {}).id;
+        consumedIds.add(scId);
+        // Also consume any children of nested stencil containers
+        const nested = childrenByParent.get(scId);
+        if (nested) {
+          for (const n of nested) consumedIds.add((n.$ ?? {}).id);
+        }
+      }
+      if (textChild) consumedIds.add((textChild.$ ?? {}).id);
+    }
+  }
+
   const elements: DiagramElement[] = [];
   // First pass: build ID → position map for parent-relative → absolute conversion
   const cellPositions = new Map<string, { x: number; y: number; parent?: string }>();
@@ -407,6 +512,55 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
   }
 
   for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    const id: string = attrs.id;
+
+    // Skip consumed children of merged Visio groups
+    if (consumedIds.has(id)) continue;
+
+    // Handle merged Visio container: emit a single Shape
+    if (mergedGroups.has(id)) {
+      const { stencilChildren, textChild } = mergedGroups.get(id)!;
+      const textLabel: string = textChild
+        ? ((textChild.$ ?? {}).value ?? "").replace(/<br\s*\/?>/g, "\\n").replace(/<[^>]+>/g, "")
+        : "";
+
+      const geom = c.mxGeometry?.[0]?.$;
+      const x = Number(geom?.x ?? 0);
+      const y = Number(geom?.y ?? 0);
+      const width = Number(geom?.width ?? 120);
+      const height = Number(geom?.height ?? 60);
+
+      const style: string = attrs.style ?? "";
+      const isRounded = style.includes("rounded=1");
+
+      const shape: Shape = {
+        kind: "shape",
+        shapeType: isRounded ? "rbox" : "box",
+        id,
+        label: textLabel,
+        position: { x, y },
+        size: { width, height },
+      };
+
+      // Try to get color from the first stencil child's stroke
+      const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
+      const stencilStroke = getStyleProp(stencilStyle, "strokeColor");
+      const color = stencilStroke ? nearestColorToken(stencilStroke) : undefined;
+      if (color) shape.color = color;
+
+      // Group — parent other than "1" means it's inside a group
+      const parent = attrs.parent;
+      if (parent && parent !== "1" && parent !== "0") {
+        shape.group = parent;
+      }
+
+      elements.push(shape);
+      continue;
+    }
+
     const el = parseCell(cell, parentMap);
     if (el) elements.push(el);
   }

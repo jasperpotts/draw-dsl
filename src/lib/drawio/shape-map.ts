@@ -103,6 +103,8 @@ const STYLE_TO_SHAPE_PATTERNS: Array<{ test: (s: string) => boolean; keyword: Sh
   { test: (s) => /\btriangle\b/.test(s), keyword: "triangle" },
   { test: (s) => /\bellipse\b/.test(s) && /aspect=fixed/.test(s), keyword: "circle" },
   { test: (s) => /\bellipse\b/.test(s), keyword: "ellipse" },
+  { test: (s) => /shape=stencil\(/.test(s) && /rounded=1/.test(s), keyword: "rbox" },
+  { test: (s) => /shape=stencil\(/.test(s), keyword: "box" as ShapeKeyword },
   { test: (s) => /rounded=1/.test(s), keyword: "rbox" },
 ];
 
@@ -117,7 +119,13 @@ export function styleToShape(style: string): string {
 
   // Rule 3: extract shape=X
   const m = style.match(/shape=([^;]+)/);
-  if (m) return m[1];
+  if (m) {
+    // Stencil shapes (Visio imports) → fallback to rbox or box
+    if (m[1].startsWith("stencil(")) {
+      return /rounded=1/.test(style) ? "rbox" : "box";
+    }
+    return m[1];
+  }
 
   return "box";
 }

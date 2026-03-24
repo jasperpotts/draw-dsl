@@ -48,7 +48,16 @@ function serializeShape(shape: Shape): string {
 
 function serializeConnection(conn: Connection): string {
   const arrow = conn.terminal ? `${conn.arrow}${conn.terminal}` : conn.arrow;
-  const parts: string[] = [conn.source, arrow, conn.target];
+
+  // Floating edge endpoints: use @X,Y when no source/target cell ID
+  const sourceToken = (!conn.source && conn.sourcePoint)
+    ? `@${conn.sourcePoint.x},${conn.sourcePoint.y}`
+    : conn.source;
+  const targetToken = (!conn.target && conn.targetPoint)
+    ? `@${conn.targetPoint.x},${conn.targetPoint.y}`
+    : conn.target;
+
+  const parts: string[] = [sourceToken, arrow, targetToken];
   if (conn.label) {
     parts.push(`"${conn.label}"`);
   }

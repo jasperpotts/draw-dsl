@@ -439,8 +439,10 @@ export function buildMxGraphXml(
       );
     } else if (el.kind === "connection") {
       const connId = nextId();
-      const sourceId = idMap.get(el.source) ?? el.source;
-      const targetId = idMap.get(el.target) ?? el.target;
+      const isFloatingSource = !el.source && !!el.sourcePoint;
+      const isFloatingTarget = !el.target && !!el.targetPoint;
+      const sourceId = isFloatingSource ? "" : (idMap.get(el.source) ?? el.source);
+      const targetId = isFloatingTarget ? "" : (idMap.get(el.target) ?? el.target);
 
       const arrowProps = ARROW_TO_STYLE[el.arrow];
       const imp: ImportanceLevel = el.importance ?? 3;
@@ -514,9 +516,22 @@ export function buildMxGraphXml(
         geometryInner = `<Array as="points">${points}</Array>`;
       }
 
+      // Floating edge endpoints (Visio imports)
+      if (isFloatingSource && el.sourcePoint) {
+        geometryInner += `<mxPoint x="${el.sourcePoint.x}" y="${el.sourcePoint.y}" as="sourcePoint" />`;
+      }
+      if (isFloatingTarget && el.targetPoint) {
+        geometryInner += `<mxPoint x="${el.targetPoint.x}" y="${el.targetPoint.y}" as="targetPoint" />`;
+      }
+
+      // Build source/target attributes — omit for floating endpoints
+      let edgeAttrs = `edge="1"`;
+      if (!isFloatingSource) edgeAttrs += ` source="${sourceId}"`;
+      if (!isFloatingTarget) edgeAttrs += ` target="${targetId}"`;
+
       cellLines.push(
-        `    <mxCell id="${connId}" value="${label}" style="${style}" edge="1" source="${sourceId}" target="${targetId}" parent="1">` +
-        `<mxGeometry${geometryInner ? "" : ` relative="1"`} as="geometry">${geometryInner}</mxGeometry>` +
+        `    <mxCell id="${connId}" value="${label}" style="${style}" ${edgeAttrs} parent="1">` +
+        `<mxGeometry relative="1" as="geometry">${geometryInner}</mxGeometry>` +
         `</mxCell>`
       );
     }

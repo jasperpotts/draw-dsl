@@ -135,6 +135,10 @@ export interface Connection {
   /** Exit anchor point on source (0.0–1.0). */
   exitX?: number;
   exitY?: number;
+  /** Absolute coordinate when no source cell (Visio floating edge). */
+  sourcePoint?: Position;
+  /** Absolute coordinate when no target cell (Visio floating edge). */
+  targetPoint?: Position;
   /** Source line number (1-based). */
   line?: number;
 }

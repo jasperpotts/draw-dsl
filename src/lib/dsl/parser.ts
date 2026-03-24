@@ -250,14 +250,35 @@ function parseConnectionLine(
     return null;
   }
 
-  const source = tokens[0].value;
+  const sourceToken = tokens[0].value;
   const arrowMatch = matchArrow(tokens[1].value);
   if (!arrowMatch) {
     errors.push({ line: lineNum, message: `Unknown arrow operator '${tokens[1].value}'` });
     return null;
   }
 
-  const target = tokens[2].value;
+  const targetToken = tokens[2].value;
+
+  // Parse floating edge endpoints: @X,Y means no cell ID, just absolute coordinates
+  let source = sourceToken;
+  let sourcePoint: Position | undefined;
+  if (sourceToken.startsWith("@")) {
+    const pos = parsePosition(sourceToken);
+    if (pos) {
+      sourcePoint = pos;
+      source = "";
+    }
+  }
+
+  let target = targetToken;
+  let targetPoint: Position | undefined;
+  if (targetToken.startsWith("@")) {
+    const pos = parsePosition(targetToken);
+    if (pos) {
+      targetPoint = pos;
+      target = "";
+    }
+  }
 
   const connection: Connection = {
     kind: "connection",
@@ -266,6 +287,9 @@ function parseConnectionLine(
     target,
     line: lineNum,
   };
+
+  if (sourcePoint) connection.sourcePoint = sourcePoint;
+  if (targetPoint) connection.targetPoint = targetPoint;
 
   if (arrowMatch.terminal) {
     connection.terminal = arrowMatch.terminal;
