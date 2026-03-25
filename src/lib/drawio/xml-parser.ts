@@ -459,6 +459,35 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
   }
 
   // -----------------------------------------------------------------------
+  // Identify edge IDs and edge-label children (Visio edge labels)
+  // -----------------------------------------------------------------------
+  const edgeIds = new Set<string>();
+  for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    if (attrs.edge === "1" || attrs.source || attrs.target) {
+      edgeIds.add(attrs.id);
+    }
+  }
+
+  // Map edge ID → label text from vertex children (Visio edge labels)
+  const edgeLabelFromChild = new Map<string, string>();
+  for (const cell of cells) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const c = cell as any;
+    const attrs = c.$ ?? {};
+    // Vertex whose parent is an edge → edge label
+    if (attrs.vertex === "1" && attrs.parent && edgeIds.has(attrs.parent)) {
+      const labelText = extractLabel(attrs.value ?? "");
+      if (labelText) {
+        edgeLabelFromChild.set(attrs.parent, labelText);
+      }
+      consumedIds.add(attrs.id);
+    }
+  }
+
+  // -----------------------------------------------------------------------
   // Parse cells into elements
   // -----------------------------------------------------------------------
   const elements: DiagramElement[] = [];
@@ -486,7 +515,15 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
 
       // Use the stencil child's style (preserving shape=stencil(...) and all properties)
       const stencilStyle: string = (stencilChildren[0]?.$ ?? {}).style ?? "";
+      const containerStyle: string = attrs.style ?? "";
       const style = parseStyleString(stencilStyle);
+
+      // Propagate container's rounded flag to stencil
+      // The container's rounded property defines the visual shape; the stencil's
+      // rounded=0 just means the stencil path itself isn't rounded (irrelevant)
+      if (containerStyle.includes("rounded=1")) {
+        style["rounded"] = "1";
+      }
 
       // Ensure basic properties
       if (!style["html"]) style["html"] = "1";
@@ -521,6 +558,13 @@ export async function parseMxGraphXml(drawioXml: string): Promise<Diagram> {
       // Clean Visio noise and theme-ify
       cleanVisioNoise(el.style);
       themeifyStyle(el.style);
+
+      // Apply edge label from Visio child vertex if the edge has no label
+      if (el.kind === "edge" && !el.label) {
+        const childLabel = edgeLabelFromChild.get(attrs.id);
+        if (childLabel) el.label = childLabel;
+      }
+
       elements.push(el);
     }
   }
